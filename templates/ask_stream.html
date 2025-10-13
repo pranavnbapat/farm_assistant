@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Farm Assistant — Streaming</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        :root { --bg:#0b0f14; --panel:#121821; --muted:#9fb0c3; --text:#e9eef4; --accent:#7cc4ff; }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0; padding: 0; background: var(--bg); color: var(--text);
+          font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+        }
+        .wrap { max-width: 980px; margin: 0 auto; padding: 20px; }
+        h1 { font-weight: 600; font-size: 20px; margin: 0 0 12px; letter-spacing: .2px; }
+        .bar {
+          display: grid; grid-template-columns: 1fr auto auto; gap: 8px;
+          background: var(--panel); padding: 10px; border-radius: 12px; border: 1px solid #223043;
+          position: sticky; top: 0; z-index: 3;
+        }
+        input[type="text"] {
+          width: 100%; background: #0f1520; border: 1px solid #223043; color: var(--text);
+          border-radius: 10px; padding: 10px 12px; outline: none;
+        }
+        button {
+          background: #1a2434; color: var(--text); border: 1px solid #223043;
+          border-radius: 10px; padding: 10px 14px; cursor: pointer;
+        }
+        button:hover { background: #1e2a3e; }
+        .chat {
+          margin-top: 12px; background: var(--panel); border: 1px solid #223043; border-radius: 12px;
+          height: 70vh; overflow-y: auto; padding: 16px;
+        }
+        .msg { margin: 0 0 16px; }
+        .role { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+        .bubble {
+          background: #0f1520; border: 1px solid #223043; border-radius: 12px; padding: 12px; white-space: pre-wrap;
+        }
+        .you .bubble { border-color: #2a3d57; }
+        .assistant .bubble { border-color: #314764; }
+        .status { color: var(--muted); font-size: 12px; margin-top: 6px; }
+        .muted { color: var(--muted); }
+        .actions { display: flex; gap: 8px; align-items: center; }
+        .hidden { display: none; }
+
+        .sources-title { margin: 12px 0 6px; font-size: 12px; color: var(--muted); }
+        .sources-list  { margin: 0; padding-left: 18px; }
+        .sources-list li { margin: 2px 0; }
+
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>Farm Assistant (Streaming)</h1>
+
+        <form id="qform" class="bar">
+            <input id="question" type="text" placeholder="Ask a question…" autocomplete="off" />
+            <button id="send" type="submit">Send</button>
+            <button id="stop" type="button" class="hidden">Stop</button>
+        </form>
+
+        <div id="chat" class="chat" aria-live="polite" aria-busy="false"></div>
+
+        <div class="wrap" style="max-width: 980px; margin: 12px auto 24px;">
+            <div class="muted" style="margin-bottom:6px;">Sources</div>
+            <ul id="sources" style="padding-left:18px; margin:0;"></ul>
+        </div>
+    </div>
+
+    <script>
+        const chat = document.getElementById('chat');
+        const form = document.getElementById('qform');
+        const input = document.getElementById('question');
+        const btnSend = document.getElementById('send');
+        const btnStop = document.getElementById('stop');
+
+        let es = null;
+        let answerNode = null;
+        let statusNode = null;
+        let cancelled = false;
+        let pendingSources = [];
+
+        function scrollToBottom() { chat.scrollTop = chat.scrollHeight; }
+
+        function addMessage(role, text) {
+            const box = document.createElement('div');
+            box.className = `msg ${role}`;
+            const who = document.createElement('div');
+            who.className = 'role';
+            who.textContent = role === 'you' ? 'You' : 'Assistant';
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.textContent = text || '';
+            box.appendChild(who);
+            box.appendChild(bubble);
+            chat.appendChild(box);
+            scrollToBottom();
+
+            return bubble;
+        }
+
+        function setStatus(text) {
+            if (!statusNode) {
+                statusNode = document.createElement('div');
+                statusNode.className = 'status';
+                answerNode.parentElement.appendChild(statusNode);
+            }
+            statusNode.textContent = text;
+        }
+
+        function renderSourcesInline(container, items) {
+            if (!items || !items.length) return;
+
+            const title = document.createElement('div');
+            title.className = 'sources-title';
+            title.textContent = 'Sources';
+
+            const ul = document.createElement('ul');
+            ul.className = 'sources-list';
+
+            items.forEach(s => {
+                const li = document.createElement('li');
+                const tag = document.createElement('span');
+
+                tag.textContent = `[${s.sid || '?'}] `;
+                tag.style.fontWeight = '600';
+
+                const a = document.createElement('a');
+
+                a.href = s.url || '#';
+                a.textContent = s.title || s.id || s.url || '(untitled)';
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+
+                const meta = document.createElement('span');
+                const lic = s.license ? ` • ${s.license}` : '';
+                meta.className = 'muted';
+                meta.textContent = lic;
+
+                li.appendChild(tag);
+                li.appendChild(a);
+                li.appendChild(meta);
+                ul.appendChild(li);
+            });
+
+            // append below the assistant bubble (not inside it)
+            const holder = document.createElement('div');
+            holder.appendChild(title);
+            holder.appendChild(ul);
+            answerNode.parentElement.appendChild(holder);
+        }
+
+        function startStream(q) {
+            if (es) { es.close(); es = null; }
+            cancelled = false;
+            pendingSources = [];
+            statusNode = null;
+
+            btnSend.disabled = true;
+            btnStop.classList.remove('hidden');
+            chat.setAttribute('aria-busy', 'true');
+
+            addMessage('you', q);
+            answerNode = addMessage('assistant', '');
+
+            const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=1000`;
+            es = new EventSource(url);
+
+            es.addEventListener('status', (e) => {
+                try { setStatus(`${JSON.parse(e.data).stage}: ${JSON.parse(e.data).message}`); }
+                catch { setStatus(e.data); }
+            });
+
+            es.addEventListener('token', (e) => {
+                answerNode.textContent += e.data;
+                scrollToBottom();
+            });
+
+            // buffer sources; do not render yet
+            es.addEventListener('sources', (e) => {
+                try { pendingSources = JSON.parse(e.data) || []; }
+                catch { pendingSources = []; }
+            });
+
+            es.addEventListener('stats', () => { /* optional */ });
+
+            es.addEventListener('done', () => {
+                setStatus(cancelled ? 'Stopped.' : 'Completed.');
+                // Render buffered sources right under this assistant message
+                renderSourcesInline(answerNode, pendingSources);
+                cleanup();
+            });
+
+            es.addEventListener('error', () => {
+                setStatus('Error or connection closed.');
+                cleanup();
+            });
+        }
+
+        function cleanup() {
+            if (es) { es.close(); es = null; }
+            btnSend.disabled = false;
+            btnStop.classList.add('hidden');
+            chat.setAttribute('aria-busy', 'false');
+            scrollToBottom();
+        }
+
+        // Submit handler
+        form.addEventListener('submit', (ev) => {
+            ev.preventDefault();
+            const q = input.value.trim();
+            if (!q) return;
+            startStream(q);
+            input.value = '';
+            input.focus();
+        });
+
+        // Stop button cancels current stream
+        btnStop.addEventListener('click', () => { cancelled = true; cleanup(); });
+
+        // Convenience: Enter sends, Shift+Enter adds newline
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                form.requestSubmit();
+            }
+        });
+
+        function renderSources(items) {
+            const ul = document.getElementById('sources');
+            ul.innerHTML = '';
+            (items || []).forEach(s => {
+                const li = document.createElement('li');
+                const tag = document.createElement('span');
+                tag.textContent = `[${s.sid || '?'}] `;
+                tag.style.fontWeight = '600';
+
+                const a = document.createElement('a');
+                a.href = s.url || '#';
+                a.textContent = s.title || s.id || s.url || '(untitled)';
+                a.target = '_blank';
+                a.rel = 'noopener noreferrer';
+
+                const meta = document.createElement('span');
+                const lic = s.license ? ` • ${s.license}` : '';
+                const sc  = (typeof s.score === 'number') ? ` • score ${s.score.toFixed(3)}` : '';
+                meta.className = 'muted';
+                meta.textContent = lic + sc;
+
+                li.appendChild(tag);
+                li.appendChild(a);
+                li.appendChild(meta);
+                ul.appendChild(li);
+            });
+        }
+    </script>
+</body>
+</html>

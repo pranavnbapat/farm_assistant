@@ -5,9 +5,7 @@ services:
       context: .
     image: ghcr.io/pranavnbapat/farm_assistant:latest
     restart: unless-stopped
-    depends_on:
-      - ollama
+#    depends_on:
+#      - ollama
     env_file:
       - .env
-#    networks:
-#      - traefik_net
