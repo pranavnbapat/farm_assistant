@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field("INFO")
     APP_TITLE: str = "Farm Assistant RAG"
     APP_VERSION: str = "0.1.0"
+    ENABLE_DOCS: bool = False
+    ENABLE_REDOC: bool = False
 
     # --- OpenSearch proxy ---
     OPENSEARCH_API_URL: str  # e.g. https://api.opensearch.nexavion.com

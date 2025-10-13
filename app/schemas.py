@@ -1,17 +1,18 @@
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+
+from pydantic import BaseModel, Field
 
 class AskIn(BaseModel):
     question: str
-    page: Optional[int] = None
-    k: Optional[int] = None
+    page: Optional[int] = Field(default=None, examples=[1])
+    k: Optional[int] = Field(default=None, examples=[5])
     model: Optional[str] = None
-    include_fulltext: Optional[bool] = None
-    sort_by: Optional[str] = None
-    dev: Optional[bool] = None
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = None
-    top_k: Optional[int] = None
+    include_fulltext: Optional[bool] = Field(default=None, examples=[True])
+    sort_by: Optional[str] = Field(default=None, examples=["score_desc"])
+    dev: Optional[bool] = Field(default=False, examples=[False])
+    max_tokens: Optional[int] = Field(default=None, examples=[2000])
+    temperature: Optional[float] = Field(default=None, examples=[0.4])
+    top_k: Optional[int] = Field(default=None, examples=[4])
 
 class SourceItem(BaseModel):
     id: Optional[str] = None

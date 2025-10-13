@@ -19,7 +19,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("farm-assistant")
 
-app = FastAPI(title=S.APP_TITLE, version=S.APP_VERSION)
+ENABLE_DOCS: bool = False
+
+app = FastAPI(
+    title=S.APP_TITLE,
+    version=S.APP_VERSION,
+    docs_url="/docs" if S.ENABLE_DOCS else None,
+    redoc_url="/redoc" if getattr(S, "ENABLE_REDOC", False) else None,
+    openapi_url="/openapi.json" if S.ENABLE_DOCS else None,
+)
+
 
 app.add_middleware(
     CORSMiddleware,
