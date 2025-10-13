@@ -1,8 +1,13 @@
-import httpx
+# app/services/search_service.py
+
 import logging
+
+import httpx
+
 from typing import Dict, Any, List, Optional
-from app.schemas import AskIn
+
 from app.config import get_settings
+from app.schemas import AskIn
 
 logger = logging.getLogger("farm-assistant.search")
 S = get_settings()

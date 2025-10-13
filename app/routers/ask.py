@@ -152,13 +152,14 @@ async def ask_stream(
         # Keep the complete list for later filtering by citations
         all_sources = [
             {
-                "sid": s.sid,
-                "id": s.id,
-                "title": s.title,
-                "url": (s.display_url or s.url),
-                "license": s.license,
+                "n": i + 1,  # stable numeric index for [1], [2] ...
+                "sid": getattr(s, "sid", None),
+                "id": getattr(s, "id", None),
+                "title": getattr(s, "title", None),
+                "url": (getattr(s, "display_url", None) or getattr(s, "url", None)),
+                "license": getattr(s, "license", None),
             }
-            for s in sources
+            for i, s in enumerate(sources)
         ]
 
         if not contexts:
@@ -179,12 +180,22 @@ async def ask_stream(
             max_rounds = 3  # initial + 2 continuations
             ctx = None      # holds Ollama's context array from the last chunk
             answer_chunks: List[str] = []
+            last_done_reason = None
 
-            while rounds < max_rounds:
-                rounds += 1
+            # Keep requesting more output until model decides to stop for a reason other than length.
+            # Put a generous safety cap to prevent accidental infinite loops (e.g. 100 hops).
+            hops = 0
+            MAX_HOPS = 100
+
+            while hops < MAX_HOPS:
+                hops += 1
+
+                # For first hop, send the full prompt; subsequent hops: continue from context with empty prompt
+                _prompt = prompt if hops == 1 else ""
+
                 try:
                     async for obj in stream_generate(
-                        prompt if rounds == 1 else "Continue.",
+                        _prompt,
                         _temperature,
                         _max_tokens,
                         context=ctx,
@@ -206,13 +217,11 @@ async def ask_stream(
                             async for x in emit("stats", stats):
                                 yield x
 
-                            # continue only if limited by length
-                            if obj.get("done_reason") == "length" and rounds < max_rounds:
-                                break
-                            else:
-                                rounds = max_rounds
-                                break
-
+                            last_done_reason = obj.get("done_reason")  # e.g. "length", "stop", "unload"
+                            break
+                    # if not length-limited, we're done
+                    if last_done_reason != "length":
+                        break
                 except httpx.HTTPStatusError as e:
                     async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
                         yield x
@@ -225,17 +234,36 @@ async def ask_stream(
 
         # --- After streaming: emit only the sources actually cited in the text
         full_text = "".join(answer_chunks)
-        # 1) Normalise common variants to [S#], e.g. "(Source S2)" or "(source [S2])"
-        norm_text = _re.sub(r"\(\s*source\s*\[?\s*(S\d+)\s*\]?\s*\)", r"[\1]", full_text, flags=_re.IGNORECASE)
-        # Also catch "source S2" without parentheses
-        norm_text = _re.sub(r"\bsource\s*\[?\s*(S\d+)\s*\]?", r"[\1]", norm_text, flags=_re.IGNORECASE)
 
-        # 2) Extract [S#] labels
-        cited = {m.group(1).upper() for m in _re.finditer(r"\[(S\d+)\]", norm_text)}
-        if cited:
-            cited_sources = [s for s in all_sources if (s.get("sid") or "").upper() in cited]
+        # Normalise assorted "source" forms to [num], e.g. "(source S2)", "source [3]", "source 4"
+        norm_text = _re.sub(r"\(\s*source[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\s*\)", r"[\1]", full_text, flags=_re.IGNORECASE)
+        norm_text = _re.sub(r"\bsource[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\b", r"[\1]", norm_text, flags=_re.IGNORECASE)
+
+        # Collect citations from patterns like [1], [ 1 ], [1][3], [1, 2], [1,2,3]
+        cited_nums = set()
+
+        # 2.1 Simple/adjacent forms: [1] and also [ 1 ]
+        for m in _re.finditer(r"\[\s*(\d+)\s*\]", norm_text):
+            cited_nums.add(int(m.group(1)))
+
+        # 2.2 Comma list inside one bracket pair: [1, 2, 5]
+        for m in _re.finditer(r"\[\s*([\d\s,–-]+)\s*\]", norm_text):
+            blob = m.group(1)
+            for tok in _re.split(r"[,\s–-]+", blob):
+                if tok.isdigit():
+                    cited_nums.add(int(tok))
+
+        if cited_nums:
+            by_num = {s["n"]: s for s in all_sources}
+            cited_sources = [by_num[n] for n in sorted(cited_nums) if n in by_num]
             if cited_sources:
                 async for x in emit("sources", cited_sources):
+                    yield x
+        else:
+            # Fallback: if the model didn't cite explicitly, send top few so UI isn’t empty
+            fallback = all_sources[: min(len(all_sources), 5)]
+            if fallback:
+                async for x in emit("sources", fallback):
                     yield x
 
         # --- Done

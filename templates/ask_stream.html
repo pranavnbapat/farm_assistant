@@ -47,6 +47,22 @@
         .sources-list  { margin: 0; padding-left: 18px; }
         .sources-list li { margin: 2px 0; }
 
+        .blink {
+            animation: fadepulse 1.6s ease-in-out infinite;
+        }
+
+        @keyframes fadepulse {
+            0%   { opacity: 0.35; }
+            50%  { opacity: 1; }
+            100% { opacity: 0.35; }
+        }
+
+        sup.cite {
+            font-size: 0.72em;
+            line-height: 0;
+            vertical-align: super;
+            opacity: 0.85;
+        }
     </style>
 </head>
 <body>
@@ -94,13 +110,15 @@
             return bubble;
         }
 
-        function setStatus(text) {
+        function setStatus(text, thinking = false) {
             if (!statusNode) {
                 statusNode = document.createElement('div');
                 statusNode.className = 'status';
                 answerNode.parentElement.appendChild(statusNode);
             }
             statusNode.textContent = text;
+            if (thinking) statusNode.classList.add('blink');
+            else statusNode.classList.remove('blink');
         }
 
         function renderSourcesInline(container, items) {
@@ -108,41 +126,50 @@
 
             const title = document.createElement('div');
             title.className = 'sources-title';
-            title.textContent = 'Sources';
+            title.textContent = 'References';
 
             const ul = document.createElement('ul');
             ul.className = 'sources-list';
 
             items.forEach(s => {
                 const li = document.createElement('li');
-                const tag = document.createElement('span');
 
-                tag.textContent = `[${s.sid || '?'}] `;
-                tag.style.fontWeight = '600';
+                const sup = document.createElement('sup');
+                sup.className = 'cite';
+                sup.textContent = String(s.n || '?') + ' ';
+                li.appendChild(sup);
 
                 const a = document.createElement('a');
-
                 a.href = s.url || '#';
                 a.textContent = s.title || s.id || s.url || '(untitled)';
                 a.target = '_blank';
                 a.rel = 'noopener noreferrer';
+                li.appendChild(a);
 
                 const meta = document.createElement('span');
                 const lic = s.license ? ` • ${s.license}` : '';
                 meta.className = 'muted';
                 meta.textContent = lic;
 
-                li.appendChild(tag);
-                li.appendChild(a);
-                li.appendChild(meta);
                 ul.appendChild(li);
             });
 
-            // append below the assistant bubble (not inside it)
             const holder = document.createElement('div');
             holder.appendChild(title);
             holder.appendChild(ul);
             answerNode.parentElement.appendChild(holder);
+        }
+
+        function escapeHTML(s) {
+            return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+        }
+
+        function renderCitationsToSuperscript(node) {
+            // Convert the full text content into HTML with safe escaping,
+            // then replace [n] with a superscript; finally set as innerHTML.
+            const txt = node.textContent;
+            const html = escapeHTML(txt).replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
+            node.innerHTML = html;
         }
 
         function startStream(q) {
@@ -158,12 +185,17 @@
             addMessage('you', q);
             answerNode = addMessage('assistant', '');
 
-            const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=1000`;
+            const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=-1`;
             es = new EventSource(url);
 
             es.addEventListener('status', (e) => {
-                try { setStatus(`${JSON.parse(e.data).stage}: ${JSON.parse(e.data).message}`); }
-                catch { setStatus(e.data); }
+                try {
+                    const obj = JSON.parse(e.data);
+                    const isThinking = (obj.stage === 'LLM');  // blink only during generation
+                    setStatus(`${obj.stage}: ${obj.message}`, isThinking);
+                } catch {
+                    setStatus(e.data, false);
+                }
             });
 
             es.addEventListener('token', (e) => {
@@ -182,6 +214,7 @@
             es.addEventListener('done', () => {
                 setStatus(cancelled ? 'Stopped.' : 'Completed.');
                 // Render buffered sources right under this assistant message
+                renderCitationsToSuperscript(answerNode);
                 renderSourcesInline(answerNode, pendingSources);
                 cleanup();
             });
@@ -197,6 +230,7 @@
             btnSend.disabled = false;
             btnStop.classList.add('hidden');
             chat.setAttribute('aria-busy', 'false');
+            if (statusNode) statusNode.classList.remove('blink');  // ensure blinking stops
             scrollToBottom();
         }
 
