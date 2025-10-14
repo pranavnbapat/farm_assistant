@@ -27,10 +27,10 @@ class Settings(BaseSettings):
     # --- LLM / Ollama ---
     OLLAMA_URL: str = "http://ollama:11434"
     LLM_MODEL: str = "deepseek-llm:7b"
-    MAX_TOKENS: int = 250
+    MAX_TOKENS: int = -1
     TEMPERATURE: float = 0.4
     NUM_CTX: int = 4096
-    TOP_K: int = 4
+    TOP_K: int = 5
     MAX_CONTEXT_CHARS: int = 24000
 
     # --- Search defaults ---

@@ -38,7 +38,22 @@
         }
         .you .bubble { border-color: #2a3d57; }
         .assistant .bubble { border-color: #314764; }
-        .status { color: var(--muted); font-size: 12px; margin-top: 6px; }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 6px;
+        }
+        .status .left {
+            flex: 0 1 auto;
+        }
+        .status .right {
+            margin-left: auto;
+            color: var(--muted);
+            white-space: nowrap;
+        }
         .muted { color: var(--muted); }
         .actions { display: flex; gap: 8px; align-items: center; }
         .hidden { display: none; }
@@ -102,6 +117,36 @@
         let cancelled = false;
         let pendingSources = [];
 
+        let clientStartTs = 0;
+        let serverTimingMs = null;
+        let statusLeft = null;
+        let statusRight = null;
+
+        function formatDuration(ms) {
+            if (ms == null || !isFinite(ms)) return '';
+            if (ms < 1000) return '<1s';
+            const secs = Math.floor(ms / 1000);
+            const s = secs % 60;
+            const m = Math.floor(secs / 60) % 60;
+            const h = Math.floor(secs / 3600);
+            if (h > 0 && m > 0 && s > 0) return `${h}h ${m}m ${s}s`;
+            if (h > 0 && m > 0) return `${h}h ${m}m`;
+            if (h > 0) return `${h}h`;
+            if (m > 0 && s > 0) return `${m}m ${s}s`;
+            if (m > 0) return `${m}m`;
+            return `${s}s`;
+        }
+
+        function insertThinkTime(container, ms) {
+            const line = document.createElement('div');
+            line.className = 'muted';
+            line.style.marginTop = '10px';
+            line.style.marginBottom = '6px';
+            // Insert right after the answer bubble content:
+            container.parentElement.appendChild(line);
+            return line;
+        }
+
         function scrollToBottom() { chat.scrollTop = chat.scrollHeight; }
 
         function addMessage(role, text) {
@@ -125,11 +170,20 @@
             if (!statusNode) {
                 statusNode = document.createElement('div');
                 statusNode.className = 'status';
+                // create left/right spans
+                statusLeft = document.createElement('span');
+                statusLeft.className = 'left';
+                statusRight = document.createElement('span');
+                statusRight.className = 'right';
+                statusNode.appendChild(statusLeft);
+                statusNode.appendChild(statusRight);
                 answerNode.parentElement.appendChild(statusNode);
-            }
-            statusNode.textContent = text;
-            if (thinking) statusNode.classList.add('blink');
-            else statusNode.classList.remove('blink');
+              }
+              // left side = current stage text
+              statusLeft.textContent = text;
+
+              if (thinking) statusNode.classList.add('blink');
+              else statusNode.classList.remove('blink');
         }
 
         function renderSourcesInline(container, items) {
@@ -188,6 +242,8 @@
             cancelled = false;
             pendingSources = [];
             statusNode = null;
+            serverTimingMs = null;
+            clientStartTs = Date.now();
 
             btnSend.disabled = true;
             btnStop.classList.remove('hidden');
@@ -220,12 +276,27 @@
                 catch { pendingSources = []; }
             });
 
-            es.addEventListener('stats', () => { /* optional */ });
+            es.addEventListener('timing', (e) => {
+                try {
+                    const t = JSON.parse(e.data);
+
+                    serverTimingMs = (t && typeof t.total_ms === 'number') ? t.total_ms : null;
+                } catch { serverTimingMs = null; }
+            });
+
+            es.addEventListener('stats', () => { });
 
             es.addEventListener('done', () => {
                 setStatus(cancelled ? 'Stopped.' : 'Completed.');
                 // Render buffered sources right under this assistant message
                 renderCitationsToSuperscript(answerNode);
+
+                // Insert “Thought for …” BEFORE the References block
+                const ms = (serverTimingMs != null ? serverTimingMs : (Date.now() - clientStartTs));
+                if (statusRight) statusRight.textContent = `Thought for ${formatDuration(ms)}`;
+
+                insertThinkTime(answerNode, ms);
+
                 renderSourcesInline(answerNode, pendingSources);
                 cleanup();
             });

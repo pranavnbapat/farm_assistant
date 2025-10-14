@@ -33,7 +33,7 @@ def build_summary_prompt(user_prompt: str, text: str) -> str:
     """
     Keep user's custom prompt authoritative.
     """
-    # Small guard: trim extremely long inputs to fit context (reuse your MAX_CONTEXT_CHARS)
+    # Small guard: trim extremely long inputs to fit context
     from app.config import get_settings
     S = get_settings()
 

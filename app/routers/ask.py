@@ -3,6 +3,7 @@
 import json
 import logging
 import re as _re
+import time
 
 import httpx
 
@@ -107,6 +108,8 @@ async def ask_stream(
                 yield x
             return
 
+        t0 = time.perf_counter()
+
         # --- Start
         async for x in emit("status", {"stage": "Start", "message": "Received query"}):
             yield x
@@ -129,6 +132,8 @@ async def ask_stream(
         async for x in emit("status", {"stage": "Search", "message": "Searching sources..."}):
             yield x
 
+        t_search_start = time.perf_counter()
+
         try:
             async with os_async_client(timeout=30.0) as client:
                 items = await collect_os_items(client, search_payload, pages, headers, auth)
@@ -141,14 +146,18 @@ async def ask_stream(
                 yield x
             return
 
+        t_search_end = time.perf_counter()
+
         # --- Build contexts
         async for x in emit("status", {"stage": "Context", "message": "Preparing context..."}):
             yield x
 
+        t_ctx_start = time.perf_counter()
         t_k = inp.top_k if inp.top_k is not None else S.TOP_K
         contexts, sources = build_context_and_sources(
             items=items, question=user_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
         )
+        t_ctx_end = time.perf_counter()
 
         # Keep the complete list for later filtering by citations
         all_sources = [
@@ -164,6 +173,19 @@ async def ask_stream(
         ]
 
         if not contexts:
+            # Still emit timing so client can show a think time even when no context
+            total_ms = int((time.perf_counter() - t0) * 1000)
+            search_ms = int((t_search_end - t_search_start) * 1000)
+            context_ms = int((t_ctx_end - t_ctx_start) * 1000)
+            llm_ms = 0
+            async for x in emit("timing", {
+                "total_ms": total_ms,
+                "search_ms": search_ms,
+                "context_ms": context_ms,
+                "llm_ms": llm_ms
+            }):
+                yield x
+
             async for x in emit("done", {"answer": "", "reason": "no_context"}):
                 yield x
             return
@@ -176,6 +198,7 @@ async def ask_stream(
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         prompt = build_prompt(contexts, user_q)
 
+        t_llm_start = time.perf_counter()
         try:
             rounds = 0
             max_rounds = 3  # initial + 2 continuations
@@ -235,6 +258,8 @@ async def ask_stream(
                 yield x
             return
 
+        t_llm_end = time.perf_counter()
+
         # --- After streaming: emit only the sources actually cited in the text
         full_text = "".join(answer_chunks)
 
@@ -268,6 +293,19 @@ async def ask_stream(
             if fallback:
                 async for x in emit("sources", fallback):
                     yield x
+
+        # --- Emit timing
+        total_ms = int((time.perf_counter() - t0) * 1000)
+        search_ms = int((t_search_end - t_search_start) * 1000)
+        context_ms = int((t_ctx_end - t_ctx_start) * 1000)
+        llm_ms = int((t_llm_end - t_llm_start) * 1000)
+        async for x in emit("timing", {
+            "total_ms": total_ms,
+            "search_ms": search_ms,
+            "context_ms": context_ms,
+            "llm_ms": llm_ms
+        }):
+            yield x
 
         # --- Done
         async for x in emit("done", {"message": "complete"}):
