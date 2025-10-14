@@ -16,8 +16,8 @@ from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
 from app.services.search_service import build_search_payload, collect_os_items
 from app.services.context_service import build_context_and_sources
-from app.services.prompt_service import build_prompt
-from app.schemas import AskIn, AskOut, SourceItem
+from app.services.prompt_service import build_prompt, build_summary_prompt
+from app.schemas import AskIn, AskOut, SourceItem, SummariseIn, SummariseOut
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
@@ -87,6 +87,7 @@ async def ask_stream(
     top_k: Optional[int] = None,
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    model: Optional[str] = None,
 ):
     """
     Streaming endpoint using Server-Sent Events (SSE).
@@ -195,10 +196,12 @@ async def ask_stream(
 
                 try:
                     async for obj in stream_generate(
-                        _prompt,
-                        _temperature,
-                        _max_tokens,
-                        context=ctx,
+                            _prompt,
+                            _temperature,
+                            _max_tokens,
+                            context=ctx,
+                            model=model,
+                            num_ctx=S.NUM_CTX,
                     ):
                         # stream tokens
                         if "response" in obj and obj["response"]:
@@ -272,3 +275,49 @@ async def ask_stream(
 
     # Keep the SSE connection alive with periodic heartbeats
     return EventSourceResponse(gen(), ping=10)
+
+
+@router.post("/summarise", response_model=SummariseOut)
+async def summarise(inp: SummariseIn) -> SummariseOut:
+    """
+    Summarise a single text chunk according to a user-supplied prompt.
+    No search/context retrieval; direct LLM call.
+    """
+    user_prompt = (inp.prompt or "").strip()
+    text_chunk = (inp.text or "").strip()
+
+    if not user_prompt:
+        return SummariseOut(summary="", meta={"error": "Empty prompt"})
+    if not text_chunk:
+        return SummariseOut(summary="", meta={"error": "Empty text"})
+
+    # Build a minimal, safe prompt around the supplied text
+    prompt = build_summary_prompt(user_prompt, text_chunk)
+
+    # Use request overrides if provided, otherwise fall back to settings
+    max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
+    temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
+
+    # Direct call to Ollama (non-streaming)
+    try:
+        summary = await generate_once(prompt, temperature, max_tokens)
+    except httpx.HTTPStatusError as e:
+        body = (e.response.text or "")[:400]
+        logger.error(f"LLM error {e.response.status_code}: {body}")
+        return SummariseOut(
+            summary="",
+            meta={
+                "upstream_status": e.response.status_code,
+                "upstream_body_snippet": body,
+            },
+        )
+
+    return SummariseOut(
+        summary=summary,
+        meta={
+            "model": S.LLM_MODEL,
+            "num_ctx": S.NUM_CTX,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        },
+    )

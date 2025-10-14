@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("farm-assistant")
 
-ENABLE_DOCS: bool = False
+ENABLE_DOCS: bool = True
 
 app = FastAPI(
     title=S.APP_TITLE,

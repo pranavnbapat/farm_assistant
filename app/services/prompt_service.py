@@ -27,3 +27,24 @@ def build_prompt(contexts: list[str], question: str) -> str:
         f"User question: {question}\n\n"
         "Assistant:"
     )
+
+
+def build_summary_prompt(user_prompt: str, text: str) -> str:
+    """
+    Keep user's custom prompt authoritative.
+    """
+    # Small guard: trim extremely long inputs to fit context (reuse your MAX_CONTEXT_CHARS)
+    from app.config import get_settings
+    S = get_settings()
+
+    # Leave some headroom for the user prompt and model system tokens
+    max_text_chars = max(1000, S.MAX_CONTEXT_CHARS - len(user_prompt) - 1000)
+    safe_text = text if len(text) <= max_text_chars else text[:max_text_chars]
+
+    # Present the text under a delimiter the model can recognise easily
+    return (
+        f"{user_prompt.strip()}\n\n"
+        f"--- BEGIN TEXT ---\n"
+        f"{safe_text}\n"
+        f"--- END TEXT ---\n"
+    )

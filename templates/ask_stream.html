@@ -14,7 +14,7 @@
         .wrap { max-width: 980px; margin: 0 auto; padding: 20px; }
         h1 { font-weight: 600; font-size: 20px; margin: 0 0 12px; letter-spacing: .2px; }
         .bar {
-          display: grid; grid-template-columns: 1fr auto auto; gap: 8px;
+            display: grid; grid-template-columns: 1fr auto auto auto; gap: 8px;
           background: var(--panel); padding: 10px; border-radius: 12px; border: 1px solid #223043;
           position: sticky; top: 0; z-index: 3;
         }
@@ -63,6 +63,10 @@
             vertical-align: super;
             opacity: 0.85;
         }
+        select {
+            background: #0f1520; border: 1px solid #223043; color: var(--text);
+            border-radius: 10px; padding: 10px 12px; outline: none;
+        }
     </style>
 </head>
 <body>
@@ -71,6 +75,11 @@
 
         <form id="qform" class="bar">
             <input id="question" type="text" placeholder="Ask a question…" autocomplete="off" />
+            <select id="model" aria-label="Model">
+<!--                <option value="qwen2.5:7b-instruct">Qwen 2.5 — 7B Instruct</option>-->
+<!--                <option value="phi4:14b">Phi-4 — 14B</option>-->
+                <option value="deepseek-llm:7b" selected>base</option>
+            </select>
             <button id="send" type="submit">Send</button>
             <button id="stop" type="button" class="hidden">Stop</button>
         </form>
@@ -84,6 +93,8 @@
         const input = document.getElementById('question');
         const btnSend = document.getElementById('send');
         const btnStop = document.getElementById('stop');
+        const selModel = document.getElementById('model');
+
 
         let es = null;
         let answerNode = null;
@@ -185,7 +196,7 @@
             addMessage('you', q);
             answerNode = addMessage('assistant', '');
 
-            const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=-1`;
+            const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=-1&model=${encodeURIComponent(selModel.value)}`;
             es = new EventSource(url);
 
             es.addEventListener('status', (e) => {

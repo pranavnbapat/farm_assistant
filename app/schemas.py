@@ -39,3 +39,13 @@ class AskOut(BaseModel):
     used_context: List[str]
     sources: List[SourceItem] = []
     meta: Dict[str, Any] = {}
+
+class SummariseIn(BaseModel):
+    prompt: str
+    text: str
+    max_tokens: Optional[int] = Field(default=None, examples=[-1])
+    temperature: Optional[float] = Field(default=None, examples=[0.4])
+
+class SummariseOut(BaseModel):
+    summary: str
+    meta: Dict[str, Any] = {}
