@@ -17,6 +17,10 @@ def build_gen_payload(prompt: str, temperature: float, num_predict: int, model: 
             "temperature": temperature,
             "num_predict": num_predict,
             "num_ctx": (num_ctx or S.NUM_CTX),
+            "top_p": 0.9,
+            "repeat_penalty": 1.1,
+            "presence_penalty": 0.2,
+            "keep_alive": "30m",
         },
         "stream": False
     }
@@ -32,6 +36,10 @@ def build_stream_payload(prompt: str, temperature: float, num_predict: int,
             "temperature": temperature,
             "num_predict": num_predict,
             "num_ctx": (num_ctx or S.NUM_CTX),
+            "top_p": 0.9,
+            "repeat_penalty": 1.1,
+            "presence_penalty": 0.2,
+            "keep_alive": "30m",
         },
         "stream": True
     }
