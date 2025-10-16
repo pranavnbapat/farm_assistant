@@ -15,11 +15,10 @@ from sse_starlette.sse import EventSourceResponse
 from app.clients.ollama_client import generate_once, stream_generate
 from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
-from app.services.context_service import build_context_and_sources, estimate_retrieval_quality
-from app.services.search_service import build_search_payload, collect_os_items, probe_has_hits
-from app.services.prompt_service import build_prompt, build_summary_prompt, build_fallback_prompt
-from app.schemas import AskIn, AskOut, SourceItem, SummariseIn, SummariseOut
-from app.nlp.intent_embeddings import decide_intent, decide_intent_cached, question_likeness
+from app.services.context_service import build_context_and_sources
+from app.services.prompt_service import build_prompt, build_summary_prompt
+from app.services.search_service import build_search_payload, collect_os_items
+from app.schemas import AskIn, SummariseIn, SummariseOut
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
@@ -53,48 +52,6 @@ async def ask_stream(
                 yield x
             return
 
-        # ---------- 1) Intent + simple gate ----------
-        intent_info = decide_intent_cached(user_q)
-        logger.info(f"intent_info {intent_info}")
-
-        gscore = float(intent_info.get("garbage_score", 1.0))
-        conf = float(intent_info.get("confidence", 0.0))
-        norm_q = intent_info.get("normalised") or user_q
-
-        GARBAGE_OK_MAX = S.GARBAGE_OK_MAX
-        CONF_STRONG = S.CONF_STRONG
-
-        allow_retrieval = (gscore < GARBAGE_OK_MAX) and (conf >= CONF_STRONG)
-        logger.info(f"gate allow_retrieval={allow_retrieval} gscore={gscore:.3f} conf={conf:.3f}")
-
-        if not allow_retrieval:
-            # ---------- 2) Fallback path (no retrieval) ----------
-            async for x in emit("status", {"stage": "LLM", "message": "Generating quick reply..."}):
-                yield x
-
-            fallback_prompt = build_fallback_prompt(intent_info, user_q)
-            _max_tokens = max_tokens if max_tokens is not None else min(256,
-                                                                        S.MAX_TOKENS if S.MAX_TOKENS != -1 else 256)
-            _temperature = temperature if temperature is not None else S.TEMPERATURE
-
-            try:
-                async for obj in stream_generate(
-                        fallback_prompt, _temperature, _max_tokens,
-                        context=None, model=model, num_ctx=S.NUM_CTX,
-                ):
-                    if "response" in obj and obj["response"]:
-                        async for x in emit("token", obj["response"]):
-                            yield x
-                    if obj.get("done"):
-                        stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
-                        if stats:
-                            async for x in emit("stats", stats): yield x
-                        break
-                async for x in emit("done", {"reason": "fallback"}): yield x
-            except httpx.HTTPStatusError as e:
-                async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}): yield x
-            return
-
         t0 = time.perf_counter()
 
         # --- Start
@@ -103,7 +60,7 @@ async def ask_stream(
 
         # --- Search
         inp = AskIn(
-            question=norm_q,
+            question=user_q,
             page=page,
             k=k,
             top_k=top_k,
@@ -111,44 +68,45 @@ async def ask_stream(
             temperature=temperature,
         )
         search_payload = build_search_payload(inp)
-
-        # Search
-        async for x in emit("status", {"stage": "Search", "message": "Searching sources..."}):
-            yield x
-
-        t_search_start = time.perf_counter()
-
         headers = os_headers()
         auth = os_auth()
         last_page = inp.page if (inp.page is not None and inp.page >= 1) else 1
         pages = list(range(1, last_page + 1))
+
+        async for x in emit("status", {"stage": "Search", "message": "Searching sources..."}):
+            yield x
+
+        t_search_start = time.perf_counter()
 
         try:
             async with os_async_client(timeout=30.0) as client:
                 items = await collect_os_items(client, search_payload, pages, headers, auth)
         except httpx.HTTPStatusError as e:
             body = (e.response.text or "")[:400]
-            async for x in emit("error", {"stage": "search", "status": e.response.status_code, "body": body}):
+            async for x in emit(
+                    "error",
+                    {"stage": "search", "status": e.response.status_code, "body": body},
+            ):
                 yield x
             return
 
         t_search_end = time.perf_counter()
 
-        # Build contexts
+        # --- Build contexts
         async for x in emit("status", {"stage": "Context", "message": "Preparing context..."}):
             yield x
 
         t_ctx_start = time.perf_counter()
         t_k = inp.top_k if inp.top_k is not None else S.TOP_K
         contexts, sources = build_context_and_sources(
-            items=items, question=norm_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
+            items=items, question=user_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
         )
         t_ctx_end = time.perf_counter()
 
         # Keep the complete list for later filtering by citations
         all_sources = [
             {
-                "n": i + 1,
+                "n": i + 1,  # stable numeric index for [1], [2] ...
                 "sid": getattr(s, "sid", None),
                 "id": getattr(s, "id", None),
                 "title": getattr(s, "title", None),
@@ -159,6 +117,7 @@ async def ask_stream(
         ]
 
         if not contexts:
+            # Still emit timing so client can show a think time even when no context
             total_ms = int((time.perf_counter() - t0) * 1000)
             search_ms = int((t_search_end - t_search_start) * 1000)
             context_ms = int((t_ctx_end - t_ctx_start) * 1000)
@@ -170,51 +129,71 @@ async def ask_stream(
                 "llm_ms": llm_ms
             }):
                 yield x
+
             async for x in emit("done", {"answer": "", "reason": "no_context"}):
                 yield x
             return
 
-        # LLM stream with RAG prompt
+        # --- LLM stream
         async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
             yield x
 
         _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
-        prompt = build_prompt(contexts, norm_q)
+        prompt = build_prompt(contexts, user_q)
 
         t_llm_start = time.perf_counter()
         try:
-            ctx = None
+            ctx = None  # holds Ollama's context array from the last chunk
             answer_chunks: List[str] = []
             last_done_reason = None
+
+            # Keep requesting more output until model decides to stop for a reason other than length.
+            # Put a generous safety cap to prevent accidental infinite loops (e.g. 100 hops).
             hops = 0
             MAX_HOPS = 100
 
             while hops < MAX_HOPS:
                 hops += 1
+
+                # For first hop, send the full prompt; subsequent hops: continue from context with empty prompt
                 _prompt = prompt if hops == 1 else ""
-                async for obj in stream_generate(
-                        _prompt, _temperature, _max_tokens,
-                        context=ctx, model=model, num_ctx=S.NUM_CTX,
-                ):
-                    if "response" in obj and obj["response"]:
-                        chunk = obj["response"]
-                        answer_chunks.append(chunk)
-                        async for x in emit("token", chunk):
-                            yield x
 
-                    if "context" in obj and obj["context"]:
-                        ctx = obj["context"]
+                try:
+                    async for obj in stream_generate(
+                            _prompt,
+                            _temperature,
+                            _max_tokens,
+                            context=ctx,
+                            model=model,
+                            num_ctx=S.NUM_CTX,
+                    ):
+                        # stream tokens
+                        if "response" in obj and obj["response"]:
+                            chunk = obj["response"]
+                            answer_chunks.append(chunk)
+                            async for x in emit("token", chunk):
+                                yield x
 
-                    if obj.get("done"):
-                        stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
-                        async for x in emit("stats", stats):
-                            yield x
-                        last_done_reason = obj.get("done_reason")
+                        # capture kv-cache context
+                        if "context" in obj and obj["context"]:
+                            ctx = obj["context"]
+
+                        if obj.get("done"):
+                            # forward stats
+                            stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
+                            async for x in emit("stats", stats):
+                                yield x
+
+                            last_done_reason = obj.get("done_reason")  # e.g. "length", "stop", "unload"
+                            break
+                    # if not length-limited, we're done
+                    if last_done_reason != "length":
                         break
-
-                if last_done_reason != "length":
-                    break
+                except httpx.HTTPStatusError as e:
+                    async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
+                        yield x
+                    return
 
         except httpx.HTTPStatusError as e:
             async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
@@ -234,8 +213,11 @@ async def ask_stream(
         # Collect citations from patterns like [1], [ 1 ], [1][3], [1, 2], [1,2,3]
         cited_nums = set()
 
+        # 2.1 Simple/adjacent forms: [1] and also [ 1 ]
         for m in _re.finditer(r"\[\s*(\d+)\s*\]", norm_text):
             cited_nums.add(int(m.group(1)))
+
+        # 2.2 Comma list inside one bracket pair: [1, 2, 5]
         for m in _re.finditer(r"\[\s*([\d\s,–-]+)\s*\]", norm_text):
             blob = m.group(1)
             for tok in _re.split(r"[,\s–-]+", blob):
@@ -255,7 +237,7 @@ async def ask_stream(
                 async for x in emit("sources", fallback):
                     yield x
 
-        # --- Timing
+        # --- Emit timing
         total_ms = int((time.perf_counter() - t0) * 1000)
         search_ms = int((t_search_end - t_search_start) * 1000)
         context_ms = int((t_ctx_end - t_ctx_start) * 1000)
