@@ -2,6 +2,8 @@
 
 import logging, re
 
+import re as _re
+
 from typing import Dict, Any, List
 
 from app.schemas import SourceItem
@@ -148,3 +150,36 @@ def build_context_and_sources(
 
     logger.info(f"Extracted {len(contexts)} context chunk(s); total_chars={total_chars}")
     return contexts, sources
+
+def _tokenise_alpha(text: str) -> list[str]:
+    return [t.lower() for t in _re.findall(r"[A-Za-z]{3,}", text or "")]  # tokens len>=3
+
+def _overlap_ratio(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return inter / max(1, min(len(a), len(b)))  # asymmetric, robust for short queries
+
+def estimate_retrieval_quality(user_q: str, items: list[dict], top_n: int = 3) -> float:
+    """
+    Rough 0..1 estimate of how semantically 'on-topic' the retrieved items are,
+    using simple token overlap against title/description (no hardcoded vocab).
+    """
+    qtok = set(_tokenise_alpha(user_q))
+    if not qtok:
+        return 0.0
+
+    scores = []
+    for it in items[:top_n]:
+        src = it.get("_source", {}) if isinstance(it, dict) and "_source" in it else it
+        title = (src.get("title") or "") + " " + (src.get("subtitle") or "")
+        desc  = (src.get("description") or "")
+        sample = f"{title} {desc}"
+        stok = set(_tokenise_alpha(sample))
+        scores.append(_overlap_ratio(qtok, stok))
+
+    if not scores:
+        return 0.0
+    # Mean of top_n overlap; clamp into [0..1]
+    s = sum(scores) / len(scores)
+    return max(0.0, min(1.0, s))

@@ -71,3 +71,34 @@ async def collect_os_items(
             all_items.append(it)
     logger.info(f"Collected total_items={len(all_items)} from pages={pages}")
     return all_items
+
+async def probe_has_hits(
+    client: httpx.AsyncClient,
+    query_text: str,
+    headers: Dict[str, str],
+    auth: Optional[httpx.Auth]
+) -> bool:
+    url = f"{S.OPENSEARCH_API_URL.rstrip('/')}{S.OS_API_PATH}"
+    payload = {
+        "search_term": query_text,
+        "page": 1,
+        "k": 1,                     # just check if anything would match
+        "dev": False,
+        "model": "msmarco",
+        "include_fulltext": False,  # make payload small
+        "sort_by": "score_desc",
+    }
+    try:
+        res = await client.post(url, json=payload, headers=headers, auth=auth)
+        res.raise_for_status()
+        obj = res.json()
+        items = (
+            obj.get("data")
+            or obj.get("results")
+            or obj.get("hits")
+            or obj.get("items")
+            or []
+        )
+        return bool(items)
+    except httpx.HTTPError:
+        return False

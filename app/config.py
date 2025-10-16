@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
 
-load_dotenv(ENV_PATH)
+# load_dotenv(ENV_PATH)
 
 class Settings(BaseSettings):
     # --- App ---
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     ENABLE_REDOC: bool = False
 
     # --- OpenSearch proxy ---
-    OPENSEARCH_API_URL: str  # e.g. https://api.opensearch.nexavion.com
+    OPENSEARCH_API_URL: str
     OPENSEARCH_API_USR: str | None = None
     OPENSEARCH_API_PWD: str | None = None
     VERIFY_SSL: bool = True
@@ -41,22 +41,42 @@ class Settings(BaseSettings):
     SEARCH_K: int = 0
     SEARCH_DEV: bool = False
 
+    GARBAGE_OK_MAX: float = Field(0.10, description="Treat as clean if garbage_score below this")
+    CONF_STRONG: float = Field(0.80, description="Treat as confident if above this")
+
     # pydantic v2 config
     model_config = SettingsConfigDict(
         env_file=".env",
-        case_sensitive=True,
+        env_file_encoding="utf-8",
+        case_sensitive=False,
     )
 
     # light normalisation
     def normalise(self) -> "Settings":
+        # Empty creds -> None
         if self.OPENSEARCH_API_USR == "":
             self.OPENSEARCH_API_USR = None
         if self.OPENSEARCH_API_PWD == "":
             self.OPENSEARCH_API_PWD = None
+
+        # Trim URLs
         if self.OPENSEARCH_API_URL:
             self.OPENSEARCH_API_URL = self.OPENSEARCH_API_URL.rstrip("/")
         if self.OLLAMA_URL:
             self.OLLAMA_URL = self.OLLAMA_URL.rstrip("/")
+
+        # Clamp/validate knobs
+        # self.TEMPERATURE = max(0.0, min(2.0, float(self.TEMPERATURE)))
+        # if not (self.MAX_TOKENS == -1 or self.MAX_TOKENS >= 1):
+        #     self.MAX_TOKENS = -1
+
+        # self.GARBAGE_OK_MAX = max(0.0, min(1.0, float(self.GARBAGE_OK_MAX)))
+        # self.CONF_STRONG = max(0.0, min(1.0, float(self.CONF_STRONG)))
+
+        # Sanity: context sizes
+        # self.NUM_CTX = max(256, int(self.NUM_CTX))
+        # self.MAX_CONTEXT_CHARS = max(2000, int(self.MAX_CONTEXT_CHARS))
+
         return self
 
 @lru_cache()

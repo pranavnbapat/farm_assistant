@@ -48,3 +48,41 @@ def build_summary_prompt(user_prompt: str, text: str) -> str:
         f"{safe_text}\n"
         f"--- END TEXT ---\n"
     )
+
+def build_fallback_prompt(intent_info: dict, user_q: str) -> str:
+    """
+    Small, no-context prompt for non-informational queries.
+    - British English, concise, friendly.
+    - No citations, no external facts.
+    - Nudge the user towards an actionable question.
+    """
+    intent = (intent_info.get("intent") or "other").lower()
+    norm_q = intent_info.get("normalised") or user_q
+
+    if intent == "greeting":
+        style = (
+            "You are friendly and brief. Greet the user naturally, then ask how you can help with an "
+            "information request or task. Keep it to one or two short sentences."
+        )
+    elif intent == "chit-chat":
+        style = (
+            "You are light and concise. Give a brief, friendly one-liner, then invite the user to ask a "
+            "specific question you can help with. One or two short sentences max."
+        )
+    elif intent == "garbage":
+        style = (
+            "The input looks noisy or unclear. Politely ask for clarification and offer an example of a "
+            "clear, specific question. Keep it to one sentence."
+        )
+    else:  # "other" or low-confidence intent
+        style = (
+            "The input is unclear. Ask one clarifying question to narrow the user’s goal. One sentence."
+        )
+
+    return (
+        "System: You are a precise, concise assistant (British English). "
+        "Do not invent facts. Do not use citations. Keep answers short.\n\n"
+        f"Instruction: {style}\n\n"
+        f"User input: {norm_q}\n\n"
+        "Assistant:"
+    )
