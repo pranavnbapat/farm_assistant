@@ -27,7 +27,7 @@ def _ensure_model():
     if _MODEL is not None:
         return
 
-    # Allow overriding via env; default to your DeepSeek chat model
+    # Allow overriding via env; default to DeepSeek chat model
     model_name = os.getenv("HF_CHAT_MODEL", "deepseek-ai/deepseek-llm-7b-chat")
 
     _TOKENIZER = AutoTokenizer.from_pretrained(model_name)

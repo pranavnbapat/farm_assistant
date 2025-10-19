@@ -21,6 +21,7 @@ def build_gen_payload(prompt: str, temperature: float, num_predict: int, model: 
             "repeat_penalty": 1.1,
             "presence_penalty": 0.2,
             "keep_alive": "30m",
+            "num_thread": 12,
         },
         "stream": False
     }
@@ -40,6 +41,7 @@ def build_stream_payload(prompt: str, temperature: float, num_predict: int,
             "repeat_penalty": 1.1,
             "presence_penalty": 0.2,
             "keep_alive": "30m",
+            "num_thread": 12,
         },
         "stream": True
     }

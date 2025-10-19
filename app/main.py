@@ -1,8 +1,12 @@
 # app/main.py
 
+import asyncio
 import logging
+import os
 
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast, Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,12 +25,22 @@ logger = logging.getLogger("farm-assistant")
 
 ENABLE_DOCS: bool = True
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    limit = int(os.getenv("MAX_ACTIVE_GENERATIONS", "3"))
+
+    state = cast(Any, app).state
+    state.gen_semaphore = asyncio.Semaphore(limit)
+
+    yield
+
 app = FastAPI(
     title=S.APP_TITLE,
     version=S.APP_VERSION,
     docs_url="/docs" if S.ENABLE_DOCS else None,
     redoc_url="/redoc" if getattr(S, "ENABLE_REDOC", False) else None,
     openapi_url="/openapi.json" if S.ENABLE_DOCS else None,
+    lifespan=lifespan,
 )
 
 

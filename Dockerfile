@@ -7,7 +7,7 @@ WORKDIR /app
 # System deps: tini + build toolchain for llama_cpp_python + OpenBLAS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl tini \
-      build-essential cmake \
+      build-essential cmake git \
       libopenblas0 \
   && rm -rf /var/lib/apt/lists/*
 

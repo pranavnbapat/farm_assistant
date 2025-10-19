@@ -1,5 +1,6 @@
 # app/routers/ask.py
 
+import asyncio
 import json
 import logging
 import re as _re
@@ -9,7 +10,7 @@ import httpx
 
 from typing import Optional, List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
 # from app.clients import hf_local_client
@@ -20,10 +21,24 @@ from app.services.context_service import build_context_and_sources
 from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt
 from app.services.search_service import build_search_payload, collect_os_items
 from app.schemas import AskIn, SummariseIn, SummariseOut
+from app.utils.response_cache import make_key, get_cached, set_cached, hash_contexts
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
 router = APIRouter()
+
+
+def _cache_params(_temp, _max, _model):
+    return {
+        "temperature": _temp,
+        "max_tokens": _max,
+        "model": (_model or S.LLM_MODEL),
+        "num_ctx": S.NUM_CTX,
+        "top_p": 0.9,
+    }
+
+SYSTEM_PROMPT_TAG_RAG = "rag-v1"
+SYSTEM_PROMPT_TAG_GENERIC = "generic-v1"
 
 @router.get("/ask/stream")
 async def ask_stream(
@@ -34,6 +49,7 @@ async def ask_stream(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     model: Optional[str] = None,
+    request: Request = None,
 ):
     """
     Streaming endpoint using Server-Sent Events (SSE).
@@ -54,6 +70,27 @@ async def ask_stream(
             return
 
         t0 = time.perf_counter()
+
+        # Concurrency gate helpers
+        sem = getattr(request.app.state, "gen_semaphore", None)
+
+        async def _acquire_or_queue():
+            # If no semaphore configured, proceed
+            if sem is None:
+                return  # <-- return None (no value)
+            # If no permits available, notify client once
+            if getattr(sem, "_value", 1) == 0:  # _value is internal; good enough for a hint
+                async for x in emit("status", {"stage": "Queue", "message": "Waiting for a free slot..."}):
+                    yield x
+
+            await sem.acquire()
+
+        async def _release():
+            try:
+                if sem is not None:
+                    sem.release()
+            except Exception:
+                pass
 
         # --- Intent routing ---
         async for x in emit("status", {"stage": "Intent", "message": "Routing query..."}):
@@ -88,6 +125,34 @@ async def ask_stream(
             _max_tokens = max_tokens if max_tokens is not None else S.MAX_TOKENS
             _temperature = temperature if temperature is not None else S.TEMPERATURE
             prompt = build_generic_prompt(user_q)
+
+            # Response cache lookup (no RAG context)
+            params = _cache_params(_temperature, _max_tokens, model)
+            ckey = make_key(
+                user_q=user_q,
+                system_tag=SYSTEM_PROMPT_TAG_GENERIC,
+                model_id=params["model"],
+                params=params,
+                ctx_hash="",  # no context
+            )
+            cached = get_cached(ckey)
+            if cached:
+                # Stream cached text to keep UI behaviour
+                for tok in cached["answer"].split():
+                    async for x in emit("token", tok + " "):
+                        yield x
+                async for x in emit("sources", []):
+                    yield x
+                async for x in emit("timing", {"total_ms": int((time.perf_counter() - t0) * 1000),
+                                               "search_ms": 0, "context_ms": 0, "llm_ms": 0}):
+                    yield x
+                async for x in emit("done", {"message": "complete", "cache": True}):
+                    yield x
+                return
+
+            # Concurrency gate
+            async for x in _acquire_or_queue():
+                yield x
 
             t_llm_start = time.perf_counter()
             try:
@@ -126,9 +191,18 @@ async def ask_stream(
                 async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
                     yield x
                 return
+            finally:
+                await _release()
 
             t_llm_end = time.perf_counter()
             full_text = "".join(answer_chunks)
+
+            # Save in cache
+            set_cached(ckey, full_text, meta={
+                "model": params["model"],
+                "params": params,
+                "system_tag": SYSTEM_PROMPT_TAG_GENERIC,
+            })
 
             # No sources in LLM-only; still send an empty list so UI is deterministic
             async for x in emit("sources", []):
@@ -230,6 +304,43 @@ async def ask_stream(
                 yield x
             return
 
+        ctx_h = hash_contexts(contexts)
+        _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
+        _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
+        params = _cache_params(_temperature, _max_tokens, model)
+
+        ckey = make_key(
+            user_q=user_q,
+            system_tag=SYSTEM_PROMPT_TAG_RAG,
+            model_id=params["model"],
+            params=params,
+            ctx_hash=ctx_h,
+            user_scope="",  # fill with tenant/user id if needed later
+        )
+        cached = get_cached(ckey)
+        if cached:
+            for tok in cached["answer"].split():
+                async for x in emit("token", tok + " "):
+                    yield x
+            # Send ‘cited’ sources fallback (we can’t recalc citations cheaply here)
+            fallback = all_sources[: min(len(all_sources), 5)]
+            async for x in emit("sources", fallback):
+                yield x
+
+            total_ms = int((time.perf_counter() - t0) * 1000)
+            search_ms = int((t_search_end - t_search_start) * 1000)
+            context_ms = int((t_ctx_end - t_ctx_start) * 1000)
+            async for x in emit("timing",
+                                {"total_ms": total_ms, "search_ms": search_ms, "context_ms": context_ms, "llm_ms": 0}):
+                yield x
+            async for x in emit("done", {"message": "complete", "cache": True}):
+                yield x
+            return
+
+        # Concurrency gate
+        async for x in _acquire_or_queue():
+            yield x
+
         # --- LLM stream
         async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
             yield x
@@ -295,11 +406,20 @@ async def ask_stream(
             async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
                 yield x
             return
+        finally:
+            await _release()
 
         t_llm_end = time.perf_counter()
 
         # --- After streaming: emit only the sources actually cited in the text
         full_text = "".join(answer_chunks)
+
+        set_cached(ckey, full_text, meta={
+            "model": params["model"],
+            "params": params,
+            "system_tag": SYSTEM_PROMPT_TAG_RAG,
+            "ctx_len": len(contexts),
+        })
 
         # Normalise assorted "source" forms to [num], e.g. "(source S2)", "source [3]", "source 4"
         norm_text = _re.sub(r"\(\s*source[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\s*\)", r"[\1]", full_text,
