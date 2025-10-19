@@ -12,11 +12,12 @@ from typing import Optional, List
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 
+# from app.clients import hf_local_client
 from app.clients.ollama_client import generate_once, stream_generate
 from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
 from app.services.context_service import build_context_and_sources
-from app.services.prompt_service import build_prompt, build_summary_prompt
+from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt
 from app.services.search_service import build_search_payload, collect_os_items
 from app.schemas import AskIn, SummariseIn, SummariseOut
 
@@ -53,6 +54,101 @@ async def ask_stream(
             return
 
         t0 = time.perf_counter()
+
+        # --- Intent routing ---
+        async for x in emit("status", {"stage": "Intent", "message": "Routing query..."}):
+            yield x
+
+        intent = {"path": "RAG"}  # default fallback
+        try:
+            timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
+            async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
+                ir = await client.post(
+                    S.INTENT_ROUTER_URL,
+                    json={"query": user_q, "force_prepare_if_needed": True},
+                )
+                print(ir)
+                ir.raise_for_status()
+                intent = ir.json() or intent
+        except httpx.HTTPError as e:
+            # Soft-fail to RAG if router is down
+            logger.warning(f"Intent router unavailable, falling back to RAG: {e}")
+
+        path = str(intent.get("path") or "RAG").upper()
+        print("path: " , path)
+
+        async for x in emit("meta", {"intent": intent}):
+            yield x
+
+        if path == "LLM_ONLY":
+            # --- LLM-only short-circuit (no search/context) ---
+            async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
+                yield x
+
+            _max_tokens = max_tokens if max_tokens is not None else S.MAX_TOKENS
+            _temperature = temperature if temperature is not None else S.TEMPERATURE
+            prompt = build_generic_prompt(user_q)
+
+            t_llm_start = time.perf_counter()
+            try:
+                ctx = None
+                answer_chunks: List[str] = []
+                last_done_reason = None
+                hops = 0
+                MAX_HOPS = 100
+
+                while hops < MAX_HOPS:
+                    hops += 1
+                    _prompt = prompt if hops == 1 else ""
+                    async for obj in stream_generate(
+                            _prompt, _temperature, _max_tokens,
+                            context=ctx, model=model, num_ctx=S.NUM_CTX,
+                    ):
+                        if "response" in obj and obj["response"]:
+                            chunk = obj["response"]
+                            answer_chunks.append(chunk)
+                            async for x in emit("token", chunk):
+                                yield x
+
+                        if "context" in obj and obj["context"]:
+                            ctx = obj["context"]
+
+                        if obj.get("done"):
+                            stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
+                            async for x in emit("stats", stats):
+                                yield x
+                            last_done_reason = obj.get("done_reason")
+                            break
+
+                    if last_done_reason != "length":
+                        break
+            except httpx.HTTPStatusError as e:
+                async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
+                    yield x
+                return
+
+            t_llm_end = time.perf_counter()
+            full_text = "".join(answer_chunks)
+
+            # No sources in LLM-only; still send an empty list so UI is deterministic
+            async for x in emit("sources", []):
+                yield x
+
+            total_ms = int((time.perf_counter() - t0) * 1000)
+            search_ms = 0
+            context_ms = 0
+            llm_ms = int((t_llm_end - t_llm_start) * 1000)
+            async for x in emit("timing", {
+                "total_ms": total_ms,
+                "search_ms": search_ms,
+                "context_ms": context_ms,
+                "llm_ms": llm_ms
+            }):
+                yield x
+
+            async for x in emit("done", {"message": "complete"}):
+                yield x
+            return
 
         # --- Start
         async for x in emit("status", {"stage": "Start", "message": "Received query"}):

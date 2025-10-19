@@ -48,3 +48,20 @@ def build_summary_prompt(user_prompt: str, text: str) -> str:
         f"{safe_text}\n"
         f"--- END TEXT ---\n"
     )
+
+def build_generic_prompt(question: str) -> str:
+    """
+    Generic prompt for non-RAG, chit-chat or general Q&A.
+    Keep it concise, neutral, and safe.
+    """
+    return (
+        "System: You are a helpful, precise assistant. Answer in clear, concise English.\n\n"
+        "Instructions:\n"
+        "- Respond directly to the user's question.\n"
+        "- Keep it short, well-structured, and avoid filler.\n"
+        "- If the question is casual (greetings, small-talk), reply naturally and briefly.\n"
+        "- Do NOT invent sources or citations.\n"
+        "- If the question requests opinions, be balanced and non-judgemental.\n\n"
+        f"User question: {question}\n\n"
+        "Assistant:"
+    )

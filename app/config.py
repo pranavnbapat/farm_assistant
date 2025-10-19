@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     TOP_K: int = 5
     MAX_CONTEXT_CHARS: int = 24000
 
+    # --- Intent Router ---
+    INTENT_ROUTER_URL: str = "https://intent-router.nexavion.com/intent-router"
+
     # --- Search defaults ---
     SEARCH_MODEL: str = "msmarco"
     SEARCH_INCLUDE_FULLTEXT: bool = True
