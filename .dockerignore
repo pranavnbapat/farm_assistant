@@ -40,3 +40,4 @@ output/
 *.tmp
 *.bak
 *.swp
+*.onnx
