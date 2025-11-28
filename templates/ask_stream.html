@@ -4,369 +4,76 @@
     <meta charset="utf-8" />
     <title>Farm Assistant — Streaming</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-        :root { --bg:#0b0f14; --panel:#121821; --muted:#9fb0c3; --text:#e9eef4; --accent:#7cc4ff; }
-        * { box-sizing: border-box; }
-        body {
-          margin: 0; padding: 0; background: var(--bg); color: var(--text);
-          font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
-        }
-        .wrap { max-width: 980px; margin: 0 auto; padding: 20px; }
-        h1 { font-weight: 600; font-size: 20px; margin: 0 0 12px; letter-spacing: .2px; }
-        .bar {
-            display: grid; grid-template-columns: 1fr auto auto auto; gap: 8px;
-          background: var(--panel); padding: 10px; border-radius: 12px; border: 1px solid #223043;
-          position: sticky; top: 0; z-index: 3;
-        }
-        input[type="text"] {
-          width: 100%; background: #0f1520; border: 1px solid #223043; color: var(--text);
-          border-radius: 10px; padding: 10px 12px; outline: none;
-        }
-        button {
-          background: #1a2434; color: var(--text); border: 1px solid #223043;
-          border-radius: 10px; padding: 10px 14px; cursor: pointer;
-        }
-        button:hover { background: #1e2a3e; }
-        .chat {
-          margin-top: 12px; background: var(--panel); border: 1px solid #223043; border-radius: 12px;
-          height: 70vh; overflow-y: auto; padding: 16px;
-        }
-        .msg { margin: 0 0 16px; }
-        .role { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-        .bubble {
-          background: #0f1520; border: 1px solid #223043; border-radius: 12px; padding: 12px; white-space: pre-wrap;
-        }
-        .you .bubble { border-color: #2a3d57; }
-        .assistant .bubble { border-color: #314764; }
-        .status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: var(--muted);
-            font-size: 12px;
-            margin-top: 6px;
-        }
-        .status .left {
-            flex: 0 1 auto;
-        }
-        .status .right {
-            margin-left: auto;
-            color: var(--muted);
-            white-space: nowrap;
-        }
-        .muted { color: var(--muted); }
-        .actions { display: flex; gap: 8px; align-items: center; }
-        .hidden { display: none; }
 
-        .sources-title { margin: 12px 0 6px; font-size: 12px; color: var(--muted); }
-        .sources-list  { margin: 0; padding-left: 18px; }
-        .sources-list li { margin: 2px 0; }
-
-        .blink {
-            animation: fadepulse 1.6s ease-in-out infinite;
-        }
-
-        @keyframes fadepulse {
-            0%   { opacity: 0.35; }
-            50%  { opacity: 1; }
-            100% { opacity: 0.35; }
-        }
-
-        sup.cite {
-            font-size: 0.72em;
-            line-height: 0;
-            vertical-align: super;
-            opacity: 0.85;
-        }
-        select {
-            background: #0f1520; border: 1px solid #223043; color: var(--text);
-            border-radius: 10px; padding: 10px 12px; outline: none;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/custom.css" />
 </head>
 <body>
-    <div class="wrap">
-        <h1>Farm Assistant (Streaming)</h1>
+    <div class="layout chat-layout hidden" id="app-layout">
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <h2>Chats</h2>
+                <button id="new-chat">＋ New</button>
+            </div>
+            <ul id="session-list" class="session-list">
+                <!-- Filled by JS -->
+            </ul>
+        </aside>
 
-        <form id="qform" class="bar">
-            <input id="question" type="text" placeholder="Ask a question…" autocomplete="off" />
-            <select id="model" aria-label="Model">
-<!--                <option value="qwen2.5:7b-instruct">Qwen 2.5 — 7B Instruct</option>-->
-<!--                <option value="phi4:14b">Phi-4 — 14B</option>-->
-<!--                <option value="deepseek-llm:7b" selected>deepseek-llm:7b</option>-->
-<!--                <option value="hf:deepseek-ai/deepseek-llm-7b-chat">HF Local — DeepSeek 7B Chat</option>-->
-                <option value="deepseek-llm:7b-chat-q5_K_M" selected>DeepSeek 7B Chat Q5_K_M</option>
-<!--                <option value="deepseek-llm:7b-chat-q6_K">DeepSeek 7B Chat Q6_K</option>-->
-<!--                <option value="deepseek-llm:7b-chat-q8_0">DeepSeek 7B Chat Q8_0</option>-->
-            </select>
-            <button id="send" type="submit">Send</button>
-            <button id="stop" type="button" class="hidden">Stop</button>
-        </form>
+        <div class="wrap">
+            <div class="auth-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span class="muted">
+                    Welcome, <span id="chat-user-name"></span>
+                    <span style="opacity:.8;">(<span id="chat-user-email"></span>)</span>
+                </span>
+                <button id="logout-btn" type="button">Logout</button>
+            </div>
 
-        <div id="chat" class="chat" aria-live="polite" aria-busy="false"></div>
+            <h1>Farm Assistant (Streaming)</h1>
+
+            <div class="chat-shell">
+                <div id="chat" class="chat" aria-live="polite" aria-busy="false"></div>
+
+                <form id="qform" class="bar composer">
+                    <input id="question" type="text" placeholder="Ask a question…" autocomplete="off" />
+
+                    <label class="actions" style="font-size: 13px;">
+                        <input id="speak-toggle" type="checkbox" />
+                        <span class="muted">Speak</span>
+                    </label>
+
+                    <select id="voice-select" aria-label="Voice profile">
+                        <option value="en-gb-neutral" selected>English (UK) — Neutral</option>
+                        <option value="en-gb-male">English (UK) — Male</option>
+                        <option value="en-gb-female">English (UK) — Female</option>
+                    </select>
+
+                    <button id="play-last" type="button">🔊 Listen</button>
+
+                    <select id="model" aria-label="Model" class="hidden">
+                        <option value="deepseek-llm:7b-chat-q5_K_M" selected>DeepSeek 7B Chat Q5_K_M</option>
+                    </select>
+                    <button id="send" type="submit">Send</button>
+                    <button id="stop" type="button" class="hidden">Stop</button>
+                </form>
+
+                <div class="audio-row">
+                    <audio id="live-audio" preload="none" controls></audio>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
-        const chat = document.getElementById('chat');
-        const form = document.getElementById('qform');
-        const input = document.getElementById('question');
-        const btnSend = document.getElementById('send');
-        const btnStop = document.getElementById('stop');
-        const selModel = document.getElementById('model');
-
-
-        let es = null;
-        let answerNode = null;
-        let statusNode = null;
-        let cancelled = false;
-        let pendingSources = [];
-
-        let clientStartTs = 0;
-        let serverTimingMs = null;
-        let statusLeft = null;
-        let statusRight = null;
-
-        function formatDuration(ms) {
-            if (ms == null || !isFinite(ms)) return '';
-            if (ms < 1000) return '<1s';
-            const secs = Math.floor(ms / 1000);
-            const s = secs % 60;
-            const m = Math.floor(secs / 60) % 60;
-            const h = Math.floor(secs / 3600);
-            if (h > 0 && m > 0 && s > 0) return `${h}h ${m}m ${s}s`;
-            if (h > 0 && m > 0) return `${h}h ${m}m`;
-            if (h > 0) return `${h}h`;
-            if (m > 0 && s > 0) return `${m}m ${s}s`;
-            if (m > 0) return `${m}m`;
-            return `${s}s`;
-        }
-
-        function insertThinkTime(container, ms) {
-            const line = document.createElement('div');
-            line.className = 'muted';
-            line.style.marginTop = '10px';
-            line.style.marginBottom = '6px';
-
-            container.parentElement.appendChild(line);
-            return line;
-        }
-
-        function scrollToBottom() { chat.scrollTop = chat.scrollHeight; }
-
-        function addMessage(role, text) {
-            const box = document.createElement('div');
-            box.className = `msg ${role}`;
-            const who = document.createElement('div');
-            who.className = 'role';
-            who.textContent = role === 'you' ? 'You' : 'Assistant';
-            const bubble = document.createElement('div');
-            bubble.className = 'bubble';
-            bubble.textContent = text || '';
-            box.appendChild(who);
-            box.appendChild(bubble);
-            chat.appendChild(box);
-            scrollToBottom();
-
-            return bubble;
-        }
-
-        function setStatus(text, thinking = false) {
-            if (!statusNode) {
-                statusNode = document.createElement('div');
-                statusNode.className = 'status';
-                // create left/right spans
-                statusLeft = document.createElement('span');
-                statusLeft.className = 'left';
-                statusRight = document.createElement('span');
-                statusRight.className = 'right';
-                statusNode.appendChild(statusLeft);
-                statusNode.appendChild(statusRight);
-                answerNode.parentElement.appendChild(statusNode);
-              }
-              // left side = current stage text
-              statusLeft.textContent = text;
-
-              if (thinking) statusNode.classList.add('blink');
-              else statusNode.classList.remove('blink');
-        }
-
-        function renderSourcesInline(container, items) {
-            if (!items || !items.length) return;
-
-            const title = document.createElement('div');
-            title.className = 'sources-title';
-            title.textContent = 'References';
-
-            const ul = document.createElement('ul');
-            ul.className = 'sources-list';
-
-            items.forEach(s => {
-                const li = document.createElement('li');
-
-                const sup = document.createElement('sup');
-                sup.className = 'cite';
-                sup.textContent = String(s.n || '?') + ' ';
-                li.appendChild(sup);
-
-                const a = document.createElement('a');
-                a.href = s.url || '#';
-                a.textContent = s.title || s.id || s.url || '(untitled)';
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
-                li.appendChild(a);
-
-                const meta = document.createElement('span');
-                const lic = s.license ? ` • ${s.license}` : '';
-                meta.className = 'muted';
-                meta.textContent = lic;
-
-                ul.appendChild(li);
-            });
-
-            const holder = document.createElement('div');
-            holder.appendChild(title);
-            holder.appendChild(ul);
-            answerNode.parentElement.appendChild(holder);
-        }
-
-        function escapeHTML(s) {
-            return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-        }
-
-        function renderCitationsToSuperscript(node) {
-            // Convert the full text content into HTML with safe escaping,
-            // then replace [n] with a superscript; finally set as innerHTML.
-            const txt = node.textContent;
-            const html = escapeHTML(txt).replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
-            node.innerHTML = html;
-        }
-
-        function startStream(q) {
-            if (es) { es.close(); es = null; }
-            cancelled = false;
-            pendingSources = [];
-            statusNode = null;
-            serverTimingMs = null;
-            clientStartTs = Date.now();
-
-            btnSend.disabled = true;
-            btnStop.classList.remove('hidden');
-            chat.setAttribute('aria-busy', 'true');
-
-            addMessage('you', q);
-            answerNode = addMessage('assistant', '');
-
-            const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=-1&model=${encodeURIComponent(selModel.value)}`;
-            es = new EventSource(url);
-
-            es.addEventListener('status', (e) => {
-                try {
-                    const obj = JSON.parse(e.data);
-                    const isThinking = (obj.stage === 'LLM');  // blink only during generation
-                    setStatus(`${obj.stage}: ${obj.message}`, isThinking);
-                } catch {
-                    setStatus(e.data, false);
-                }
-            });
-
-            es.addEventListener('token', (e) => {
-                answerNode.textContent += e.data;
-                scrollToBottom();
-            });
-
-            // buffer sources; do not render yet
-            es.addEventListener('sources', (e) => {
-                try { pendingSources = JSON.parse(e.data) || []; }
-                catch { pendingSources = []; }
-            });
-
-            es.addEventListener('timing', (e) => {
-                try {
-                    const t = JSON.parse(e.data);
-
-                    serverTimingMs = (t && typeof t.total_ms === 'number') ? t.total_ms : null;
-                } catch { serverTimingMs = null; }
-            });
-
-            es.addEventListener('stats', () => { });
-
-            es.addEventListener('done', () => {
-                setStatus(cancelled ? 'Stopped.' : 'Completed.');
-
-                renderCitationsToSuperscript(answerNode);
-
-                const ms = (serverTimingMs != null ? serverTimingMs : (Date.now() - clientStartTs));
-                if (statusRight) statusRight.textContent = `Thought for ${formatDuration(ms)}`;
-
-                insertThinkTime(answerNode, ms);
-
-                renderSourcesInline(answerNode, pendingSources);
-                cleanup();
-            });
-
-            es.addEventListener('error', () => {
-                setStatus('Error or connection closed.');
-                cleanup();
-            });
-        }
-
-        function cleanup() {
-            if (es) { es.close(); es = null; }
-            btnSend.disabled = false;
-            btnStop.classList.add('hidden');
-            chat.setAttribute('aria-busy', 'false');
-            if (statusNode) statusNode.classList.remove('blink');  // ensure blinking stops
-            scrollToBottom();
-        }
-
-        // Submit handler
-        form.addEventListener('submit', (ev) => {
-            ev.preventDefault();
-            const q = input.value.trim();
-            if (!q) return;
-            startStream(q);
-            input.value = '';
-            input.focus();
-        });
-
-        // Stop button cancels current stream
-        btnStop.addEventListener('click', () => { cancelled = true; cleanup(); });
-
-        // Convenience: Enter sends, Shift+Enter adds newline
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                form.requestSubmit();
+        // If no token, send user back to login page
+        (function () {
+            const token = localStorage.getItem('fa_access_token');
+            if (!token) {
+                window.location.href = "/";
             }
-        });
-
-        function renderSources(items) {
-            const ul = document.getElementById('sources');
-            ul.innerHTML = '';
-            (items || []).forEach(s => {
-                const li = document.createElement('li');
-                const tag = document.createElement('span');
-                tag.textContent = `[${s.sid || '?'}] `;
-                tag.style.fontWeight = '600';
-
-                const a = document.createElement('a');
-                a.href = s.url || '#';
-                a.textContent = s.title || s.id || s.url || '(untitled)';
-                a.target = '_blank';
-                a.rel = 'noopener noreferrer';
-
-                const meta = document.createElement('span');
-                const lic = s.license ? ` • ${s.license}` : '';
-                const sc  = (typeof s.score === 'number') ? ` • score ${s.score.toFixed(3)}` : '';
-                meta.className = 'muted';
-                meta.textContent = lic + sc;
-
-                li.appendChild(tag);
-                li.appendChild(a);
-                li.appendChild(meta);
-                ul.appendChild(li);
-            });
-        }
+        })();
     </script>
+
+    <script src="/static/js/tts.js"></script>
+    <script src="/static/js/chat.js"></script>
 </body>
 </html>

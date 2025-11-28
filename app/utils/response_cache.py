@@ -10,6 +10,9 @@ import time
 
 from typing import Any, Iterable, Optional
 
+from redis.exceptions import RedisError
+
+
 _redis = None  # lazy-initialised client
 
 def _r() -> redis.Redis:
@@ -51,7 +54,10 @@ def make_key(
 def get_cached(key: str) -> Optional[dict]:
     if os.getenv("CACHE_ENABLED", "true").lower() != "true":
         return None
-    val = _r().get(f"cache:{key}")
+    try:
+        val = _r().get(f"cache:{key}")
+    except RedisError:
+        return None
     return json.loads(val) if val else None
 
 def set_cached(key: str, answer: str, meta: dict[str, Any]) -> None:
@@ -59,4 +65,8 @@ def set_cached(key: str, answer: str, meta: dict[str, Any]) -> None:
         return
     ttl = int(os.getenv("CACHE_TTL_SECONDS", "86400"))
     payload = {"answer": answer, "meta": meta, "created_at": int(time.time())}
-    _r().set(f"cache:{key}", json.dumps(payload), ex=ttl)
+    try:
+        _r().set(f"cache:{key}", json.dumps(payload), ex=ttl)
+    except RedisError:
+        # swallow error – just means no caching
+        return

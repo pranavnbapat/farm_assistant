@@ -322,7 +322,7 @@ async def ask_stream(
             for tok in cached["answer"].split():
                 async for x in emit("token", tok + " "):
                     yield x
-            # Send ‘cited’ sources fallback (we can’t recalc citations cheaply here)
+
             fallback = all_sources[: min(len(all_sources), 5)]
             async for x in emit("sources", fallback):
                 yield x

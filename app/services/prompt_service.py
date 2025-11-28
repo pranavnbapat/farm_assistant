@@ -10,7 +10,8 @@ def build_prompt(contexts: list[str], question: str) -> str:
         "similar to ChatGPT-5.\n\n"
         "Instructions:\n"
         "- Read ONLY the information provided in the sources below.\n"
-        "- Respond naturally in clear, fluent English — informative but not verbose.\n"
+        "- Respond in the same language as the user's question, even if the sources are in a different language.\n"
+        "- Translate and summarise the content as needed so the answer is fully in the user's language.\n"
         "- Keep your answer short and well-structured (usually 2–4 short paragraphs, or a few bullet points if useful).\n"
         "- Avoid artificial numbering or section labels like '1)', '2)', etc.\n"
         "- Be concise and precise: avoid repetition, filler, or generalities.\n"
@@ -55,7 +56,7 @@ def build_generic_prompt(question: str) -> str:
     Keep it concise, neutral, and safe.
     """
     return (
-        "System: You are a helpful, precise assistant. Answer in clear, concise English.\n\n"
+        "System: You are a helpful, precise assistant. Answer in the same language as the user's question, in a clear and concise style.\n\n"
         "Instructions:\n"
         "- Respond directly to the user's question.\n"
         "- Keep it short, well-structured, and avoid filler.\n"
