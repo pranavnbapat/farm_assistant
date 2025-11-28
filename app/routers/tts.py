@@ -1,18 +1,20 @@
 # app/routers/tts.py
 
-import asyncio, json
+import asyncio
+import json
+import os
 
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Tuple
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 
 
 # ---- Voice registry -------------------
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-MODELS_DIR = BASE_DIR / "models"
+MODELS_DIR = Path(os.getenv("PIPER_MODELS_DIR", str(BASE_DIR / "models"))).resolve()
 
 VOICES: Dict[str, Tuple[str, str]] = {
     "en-gb-male": (
@@ -29,9 +31,34 @@ VOICES: Dict[str, Tuple[str, str]] = {
     ),
 }
 
+def _ensure_voice_files_exist() -> None:
+    """Raise a clear error if any configured model/config file is missing."""
+    for voice, (model_path, cfg_path) in VOICES.items():
+        mp = Path(model_path)
+        cp = Path(cfg_path)
+        if not mp.exists() or not cp.exists():
+            raise RuntimeError(
+                f"TTS model files missing for '{voice}': "
+                f"{mp if not mp.exists() else ''} {cp if not cp.exists() else ''}"
+            )
+
+_ensure_voice_files_exist()
+
+def _get_voice_paths(voice_id: str) -> Tuple[str, str]:
+    model, cfg = VOICES.get(voice_id, VOICES["en-gb-neutral"])
+    model_path = Path(model)
+    cfg_path = Path(cfg)
+
+    if not model_path.is_file() or not cfg_path.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail=f"TTS voice '{voice_id}' is not available (missing model/config files).",
+        )
+
+    return str(model_path), str(cfg_path)
 
 def _piper_cmd(voice_id: str):
-    model, cfg = VOICES.get(voice_id, VOICES["en-gb-neutral"])
+    model, cfg = _get_voice_paths(voice_id)
     return ["piper", "--model", model, "--config", cfg, "--raw-output", "-"]
 
 router = APIRouter()
