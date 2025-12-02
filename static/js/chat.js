@@ -358,13 +358,11 @@ function attachSpeakButton(bubble) {
         window.speechSynthesis.speak(utter);
     });
 
-    // Place it next to the "Thought for ..." bit if available,
-    // otherwise just append to the message box.
-    if (window.statusRight) {
-        window.statusRight.appendChild(document.createTextNode(' '));
-        window.statusRight.appendChild(btn);
-    } else if (window.statusNode) {
-        window.statusNode.appendChild(btn);
+    if (statusLeft) {
+        statusLeft.appendChild(document.createTextNode(' '));
+        statusLeft.appendChild(btn);
+    } else if (statusNode) {
+        statusNode.appendChild(btn);
     } else {
         container.appendChild(btn);
     }
