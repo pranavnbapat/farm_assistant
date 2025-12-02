@@ -1,3 +1,5 @@
+# app/clients/opensearch_client.py
+
 import httpx
 from typing import Optional, Dict
 from app.config import get_settings

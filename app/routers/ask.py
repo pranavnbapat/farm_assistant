@@ -1,6 +1,5 @@
 # app/routers/ask.py
 
-import asyncio
 import json
 import logging
 import re as _re
