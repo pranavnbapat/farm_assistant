@@ -313,6 +313,63 @@ function scrollToBottom() {
     chat.scrollTop = chat.scrollHeight;
 }
 
+// Add a small "speak" icon for a given assistant bubble.
+// Clicking it will read out ONLY that answer via the Web Speech API.
+function attachSpeakButton(bubble) {
+    if (!bubble || !window.speechSynthesis) return;
+
+    const container = bubble.parentElement; // .msg wrapper
+
+    // Avoid duplicates on the same message
+    const existing = container.querySelector('.speak-btn');
+    if (existing) existing.remove();
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'speak-btn';
+    btn.textContent = '🔊';
+    btn.title = 'Listen to this answer';
+
+    // Simple inline styling so it looks like an icon, not a big button
+    btn.style.marginLeft = '8px';
+    btn.style.cursor = 'pointer';
+    btn.style.border = 'none';
+    btn.style.background = 'transparent';
+    btn.style.fontSize = '14px';
+    btn.style.padding = '0';
+
+    btn.addEventListener('click', () => {
+        const text = bubble.textContent || '';
+        if (!text.trim()) return;
+
+        const utter = new SpeechSynthesisUtterance(text);
+
+        // Prefer an en-GB voice if available
+        const voices = window.speechSynthesis.getVoices() || [];
+        const gbVoices = voices.filter(v =>
+            v.lang && v.lang.toLowerCase().startsWith('en-gb')
+        );
+        if (gbVoices.length) {
+            utter.voice = gbVoices[0];
+        }
+
+        // Stop any current speech, then speak this answer
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utter);
+    });
+
+    // Place it next to the "Thought for ..." bit if available,
+    // otherwise just append to the message box.
+    if (window.statusRight) {
+        window.statusRight.appendChild(document.createTextNode(' '));
+        window.statusRight.appendChild(btn);
+    } else if (window.statusNode) {
+        window.statusNode.appendChild(btn);
+    } else {
+        container.appendChild(btn);
+    }
+}
+
 function addMessage(role, text) {
     const box = document.createElement('div');
     box.className = `msg ${role}`;
@@ -476,6 +533,9 @@ function startStream(q) {
 
         const ms = (serverTimingMs != null ? serverTimingMs : (Date.now() - clientStartTs));
         if (statusRight) statusRight.textContent = `Thought for ${formatDuration(ms)}`;
+
+        // Add a speak icon for this completed assistant answer
+        attachSpeakButton(answerNode);
 
         insertThinkTime(answerNode, ms);
         renderSourcesInline(answerNode, pendingSources);
