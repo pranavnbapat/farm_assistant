@@ -19,16 +19,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App code
 COPY . .
 
-# Download Piper ONNX models into /app/models
+# Download Piper voice models into /app/models
 RUN mkdir -p /app/models && \
-    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx" \
+    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx?download=true" \
       -o /app/models/en_GB-alan-medium.onnx && \
-    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json" \
+    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json?download=true" \
       -o /app/models/en_GB-alan-medium.onnx.json && \
-    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alba/medium/en_GB-alba-medium.onnx" \
+    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alba/medium/en_GB-alba-medium.onnx?download=true" \
       -o /app/models/en_GB-alba-medium.onnx && \
-    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alba/medium/en_GB-alba-medium.onnx.json" \
+    curl -L "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alba/medium/en_GB-alba-medium.onnx.json?download=true" \
       -o /app/models/en_GB-alba-medium.onnx.json
+
 
 # Make sure Python can import "app.*"
 ENV PYTHONPATH=/app

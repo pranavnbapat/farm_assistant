@@ -5,7 +5,5 @@ services:
       context: .
     image: ghcr.io/pranavnbapat/farm_assistant:latest
     restart: unless-stopped
-    volumes:
-      - /data/piper_models:/app/models:ro
     env_file:
       - .env

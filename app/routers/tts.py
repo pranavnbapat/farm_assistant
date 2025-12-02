@@ -14,7 +14,14 @@ from fastapi.responses import StreamingResponse
 # ---- Voice registry -------------------
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-MODELS_DIR = Path(os.getenv("PIPER_MODELS_DIR", str(BASE_DIR / "models"))).resolve()
+env_models_dir = os.getenv("PIPER_MODELS_DIR")
+if env_models_dir:
+    # allow relative values like "models" (-> BASE_DIR / "models")
+    MODELS_DIR = Path(env_models_dir)
+    if not MODELS_DIR.is_absolute():
+        MODELS_DIR = BASE_DIR / MODELS_DIR
+else:
+    MODELS_DIR = BASE_DIR / "models"
 
 VOICES: Dict[str, Tuple[str, str]] = {
     "en-gb-male": (
