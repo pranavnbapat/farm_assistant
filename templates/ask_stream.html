@@ -71,6 +71,62 @@
                 window.location.href = "/";
             }
         })();
+
+        (function () {
+            const input = document.getElementById('question');
+            if (!input) return;
+
+            document.addEventListener('keydown', function (e) {
+                const active = document.activeElement;
+
+                // Do nothing if user is already typing in an input/textarea/contenteditable
+                if (
+                    active &&
+                    (
+                        active.tagName === 'INPUT' ||
+                        active.tagName === 'TEXTAREA' ||
+                        active.isContentEditable
+                    )
+                ) {
+                    return;
+                }
+
+                // Ignore modifier shortcuts like Ctrl+S, Alt+something, etc.
+                if (e.ctrlKey || e.metaKey || e.altKey) {
+                    return;
+                }
+
+                // Only react to "printable" characters (letters, numbers, punctuation)
+                const isPrintable = e.key && e.key.length === 1;
+
+                // Ignore non-printable keys **except** "/"
+                if (!isPrintable && e.key !== '/') {
+                    return;
+                }
+
+                // Prevent the character from going into some random element
+                e.preventDefault();
+
+                // Focus the chat input
+                input.focus();
+
+                // If it is a printable character **and not "/"**, manually insert it
+                // so the first key the user presses is not "lost".
+                if (isPrintable && e.key !== '/') {
+                    const start = input.selectionStart ?? input.value.length;
+                    const end = input.selectionEnd ?? input.value.length;
+
+                    const before = input.value.slice(0, start);
+                    const after = input.value.slice(end);
+
+                    // Add the character that was pressed
+                    input.value = before + e.key + after;
+
+                    const newPos = start + e.key.length;
+                    input.setSelectionRange(newPos, newPos);
+                }
+            });
+        })();
     </script>
 
     <script src="/static/js/tts.js"></script>
