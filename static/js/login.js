@@ -1,23 +1,28 @@
 // static/js/login.js
 
-// Storage keys for later use (chat page)
-const LS_TOKEN = 'fa_access_token';
-const LS_EMAIL = 'fa_email';
+// Storage keys (must match chat.js)
+const LS_TOKEN       = 'fa_access_token';
+const LS_REFRESH     = 'fa_refresh_token';
+const LS_USER_UUID   = 'fa_user_uuid';
+const LS_USER_EMAIL  = 'fa_user_email';
+// Legacy key that chat.js still reads as LS_EMAIL
+const LS_EMAIL       = 'fa_email';
 
 document.addEventListener("DOMContentLoaded", () => {
-    const form = document.getElementById("login-form");
+    const form     = document.getElementById("login-form");
     const statusEl = document.getElementById("login-status");
+
+    if (!form) return;  // safety guard
 
     form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        statusEl.textContent = "Logging in...";
+        statusEl.textContent = "Logging in…";
 
-        const email = document.getElementById("login-email").value.trim();
+        const email    = document.getElementById("login-email").value.trim();
         const password = document.getElementById("login-password").value;
 
         try {
             const resp = await fetch("/api/login", {
-                // <-- always talk to our own FastAPI app
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -26,7 +31,8 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             if (!resp.ok) {
-                const text = await resp.text();
+                // Non-200 from FastAPI
+                const text = await resp.text().catch(() => "");
                 console.error("Login error:", resp.status, text);
                 statusEl.textContent = "Login failed";
                 return;
@@ -35,16 +41,29 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await resp.json();
             console.log("Login response:", data);
 
-            const token = data.access_token || data.token;
-            if (!token) {
-                console.error("No token in login response", data);
+            // Django /fastapi/login returns:
+            // { access_token, refresh_token, uuid, status: "success" }
+            const access  = data.access_token || data.token;
+            const refresh = data.refresh_token || "";
+            const uuid    = data.uuid || "";
+            const emailToStore = data.email || email;
+
+            if (!access) {
+                console.error("No access_token in login response", data);
                 statusEl.textContent = "Login failed (no token)";
                 return;
             }
 
-            // Store token + email so chat.js can use them
-            localStorage.setItem(LS_TOKEN, token);
-            localStorage.setItem(LS_EMAIL, data.email || email);
+            // Persist everything for chat.js
+            localStorage.setItem(LS_TOKEN, access);          // fa_access_token
+            localStorage.setItem(LS_REFRESH, refresh);       // fa_refresh_token
+            localStorage.setItem(LS_USER_UUID, uuid);        // fa_user_uuid
+            localStorage.setItem(LS_USER_EMAIL, emailToStore); // fa_user_email
+
+            // Legacy keys used by existing chat.js header
+            localStorage.setItem(LS_EMAIL, emailToStore);    // fa_email
+
+            statusEl.textContent = "Logged in";
 
             // Go to chat page
             window.location.href = "/chat";

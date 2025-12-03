@@ -19,9 +19,13 @@ const BACKEND_BASE   = BACKEND_BASES[FA_ENV] || BACKEND_BASES.local;
 const SESSIONS_URL   = `${BACKEND_BASE}/chat/sessions/`;
 const LOG_TURN_URL   = `${BACKEND_BASE}/chat/log-turn/`;
 
-// Current auth token and email from login page
-let authToken = localStorage.getItem(LS_TOKEN);
-const authEmail = localStorage.getItem(LS_EMAIL);
+// Current auth token and email from login page / login.js
+let authToken    = localStorage.getItem(LS_TOKEN);
+let refreshToken = localStorage.getItem('fa_refresh_token') || null;
+
+// Email: prefer the new key 'fa_user_email', fall back to legacy 'fa_email'
+const storedUserEmail = localStorage.getItem('fa_user_email') || localStorage.getItem(LS_EMAIL);
+const authEmail = storedUserEmail || '';
 
 // If no token, send user back to login
 if (!authToken) {
@@ -66,30 +70,89 @@ if (chatUserEmailSpan && authEmail) {
     chatUserEmailSpan.textContent = authEmail;
 }
 
-// Logout button clears storage and redirects
+// Centralised forced-logout handler
+function forceLogout(reason) {
+    console.warn('Forcing logout:', reason);
+
+    // Best-effort: tell Django to invalidate all tokens for this user
+    try {
+        const email =
+            localStorage.getItem('fa_user_email') ||
+            localStorage.getItem('fa_email');
+
+        if (email) {
+            fetch(`${BACKEND_BASE}/fastapi/logout/`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email }),
+            }).catch(() => {
+                // Ignore network/logging errors here – logout must not break the UI
+            });
+        }
+    } catch (e) {
+        console.warn('Backend logout failed', e);
+    }
+
+    // Clear local tokens
+    authToken    = null;
+    refreshToken = null;
+
+    localStorage.removeItem('fa_access_token');
+    localStorage.removeItem('fa_refresh_token');
+    localStorage.removeItem('fa_user_uuid');
+    localStorage.removeItem('fa_user_email');
+    localStorage.removeItem('fa_email');
+
+    // Reset UI bits if present
+    const chatEl = document.getElementById('chat');
+    if (chatEl) chatEl.innerHTML = '';
+
+    const sessList = document.getElementById('session-list');
+    if (sessList) sessList.innerHTML = '';
+
+    // Go back to login
+    window.location.href = "/";
+}
+
+// Logout button uses forceLogout
 const logoutBtn = document.getElementById("logout-btn");
 if (logoutBtn) {
     logoutBtn.addEventListener("click", () => {
-        localStorage.removeItem(LS_TOKEN);
-        localStorage.removeItem(LS_EMAIL);
-        window.location.href = "/";
+        forceLogout('user_clicked_logout');
     });
 }
 
 // Helper to build headers for Django backend calls
 function backendHeaders() {
     const h = { 'Content-Type': 'application/json' };
+
+    // Send the current access token for normal auth
     if (authToken) {
         h['Authorization'] = 'Bearer ' + authToken;
     }
+
+    // Send refresh token so Django can transparently refresh if needed
+    if (refreshToken) {
+        h['X-Refresh-Token'] = refreshToken;
+    }
+
     return h;
 }
 
-// If Django returns a refreshed access_token, update localStorage + memory
+// If Django returns a refreshed access_token (from validate_authorization_header),
+// update localStorage + in-memory variables.
 function maybeUpdateTokenFromResponse(data) {
-    if (data && data.access_token) {
+    if (!data || typeof data !== 'object') return;
+
+    if (data.access_token) {
         authToken = data.access_token;
-        localStorage.setItem(LS_TOKEN, authToken);
+        localStorage.setItem('fa_access_token', authToken);
+    }
+
+    // Optional: if backend also returns a new refresh token in future
+    if (data.refresh_token) {
+        refreshToken = data.refresh_token;
+        localStorage.setItem('fa_refresh_token', refreshToken);
     }
 }
 
@@ -100,10 +163,26 @@ if (appLayout) {
 }
 
 
+// -----------------------------
+// Sessions + logging
+// -----------------------------
+
 // Current ChatSession.session_uuid (string or null)
 let currentSessionUuid = null;
 // Last user prompt (for logging)
 let lastUserQuestion = '';
+
+// Shared helper: handle 401/400 auth failures from Django
+function handleAuthFailure(res, data, contextLabel) {
+    if (res.status === 401 || res.status === 400) {
+        // Access token invalid AND refresh token invalid/absent
+        forceLogout(
+            `${contextLabel}_auth_failed: ` + (data && data.message ? data.message : '')
+        );
+        return true;
+    }
+    return false;
+}
 
 // Load all sessions for the sidebar
 async function loadSessions() {
@@ -115,13 +194,24 @@ async function loadSessions() {
             headers: backendHeaders(),
         });
 
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         maybeUpdateTokenFromResponse(data);
 
-        if (!res.ok || data.status !== 'success') {
-            console.warn('Failed to load sessions', data);
+        if (!res.ok) {
+             // 1) deal with auth failures (401 / 400) in a single place
+            if (handleAuthFailure(res, data, 'loadSessions')) return;
+
+             // 2) non-auth HTTP error
+            console.warn('Failed to load sessions (HTTP)', res.status, data);
             return;
         }
+
+        // 3) HTTP OK but API reported failure
+        if (data.status !== 'success') {
+            console.warn('Failed to load sessions (status)', data);
+            return;
+        }
+
         renderSessionList(data.sessions || []);
     } catch (err) {
         console.error('Error loading sessions', err);
@@ -137,8 +227,60 @@ function renderSessionList(sessions) {
         const li = document.createElement('li');
         li.className = 'session-item';
         li.dataset.uuid = sess.session_uuid;
-        li.textContent = sess.title || '(untitled)';
-        li.addEventListener('click', () => openSession(sess.session_uuid));
+
+        // Text span so we can add a delete button next to it
+        const titleSpan = document.createElement('span');
+        titleSpan.textContent = sess.title || '(untitled)';
+        titleSpan.addEventListener('click', () => openSession(sess.session_uuid));
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = '🗑';
+        delBtn.title = 'Delete this chat';
+        delBtn.className = 'session-delete-btn';
+        delBtn.style.marginLeft = '8px';
+
+        delBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();  // don’t trigger openSession
+            const ok = window.confirm('Delete this chat?');
+            if (!ok) return;
+
+            try {
+                const res = await fetch(`${SESSIONS_URL}${sess.session_uuid}/`, {
+                    method: 'DELETE',
+                    headers: backendHeaders(),
+                });
+
+                const data = await res.json().catch(() => ({}));
+                maybeUpdateTokenFromResponse(data);
+
+                if (!res.ok) {
+                    if (handleAuthFailure(res, data, 'deleteSession')) return;
+                    console.warn('Failed to delete session (HTTP)', res.status, data);
+                    return;
+                }
+
+                if (data.status !== 'success') {
+                    console.warn('Failed to delete session (status)', data);
+                    return;
+                }
+
+                // If we were viewing this session, clear it
+                if (currentSessionUuid === sess.session_uuid) {
+                    currentSessionUuid = null;
+                    const chatEl = document.getElementById('chat');
+                    if (chatEl) chatEl.innerHTML = '';
+                }
+
+                // Reload the list
+                loadSessions().catch(console.error);
+            } catch (err) {
+                console.error('Error deleting session', err);
+            }
+        });
+
+        li.appendChild(titleSpan);
+        li.appendChild(delBtn);
         listEl.appendChild(li);
     });
 }
@@ -157,11 +299,17 @@ async function createNewSession(initialTitle = '') {
             }),
         });
 
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         maybeUpdateTokenFromResponse(data);
 
-        if (!res.ok || data.status !== 'success') {
-            console.warn('Failed to create session', data);
+        if (!res.ok) {
+            if (handleAuthFailure(res, data, 'createNewSession')) return null;
+            console.warn('Failed to create session (HTTP)', res.status, data);
+            return null;
+        }
+
+        if (data.status !== 'success') {
+            console.warn('Failed to create session (status)', data);
             return null;
         }
 
@@ -192,11 +340,17 @@ async function openSession(sessionUuid) {
             headers: backendHeaders(),
         });
 
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         maybeUpdateTokenFromResponse(data);
 
-        if (!res.ok || data.status !== 'success') {
-            console.warn('Failed to load session', data);
+        if (!res.ok) {
+            if (handleAuthFailure(res, data, 'openSession')) return;
+            console.warn('Failed to load session (HTTP)', res.status, data);
+            return;
+        }
+
+        if (data.status !== 'success') {
+            console.warn('Failed to load session (status)', data);
             return;
         }
 
@@ -244,11 +398,17 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
             }),
         });
 
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         maybeUpdateTokenFromResponse(data);
 
-        if (!res.ok || data.status !== 'success') {
-            console.warn('Failed to log chat turn', data);
+        if (!res.ok) {
+            if (handleAuthFailure(res, data, 'logChatTurn')) return;
+            console.warn('Failed to log chat turn (HTTP)', res.status, data);
+            return;
+        }
+
+        if (data.status !== 'success') {
+            console.warn('Failed to log chat turn (status)', data);
             return;
         }
 
@@ -314,7 +474,6 @@ function scrollToBottom() {
 }
 
 // Add a small "speak" icon for a given assistant bubble.
-// Clicking it will read out ONLY that answer via the Web Speech API.
 function attachSpeakButton(bubble) {
     if (!bubble || !window.speechSynthesis) return;
 
@@ -330,7 +489,6 @@ function attachSpeakButton(bubble) {
     btn.textContent = '🔊';
     btn.title = 'Listen to this answer';
 
-    // Simple inline styling so it looks like an icon, not a big button
     btn.style.marginLeft = '8px';
     btn.style.cursor = 'pointer';
     btn.style.border = 'none';
@@ -353,7 +511,6 @@ function attachSpeakButton(bubble) {
             utter.voice = gbVoices[0];
         }
 
-        // Stop any current speech, then speak this answer
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utter);
     });
@@ -432,11 +589,6 @@ function renderSourcesInline(container, items) {
         a.rel = 'noopener noreferrer';
         li.appendChild(a);
 
-        const meta = document.createElement('span');
-        const lic = s.license ? ` • ${s.license}` : '';
-        meta.className = 'muted';
-        meta.textContent = lic;
-
         ul.appendChild(li);
     });
 
@@ -484,7 +636,20 @@ function startStream(q) {
         window.onAssistantStreamStart();
     }
 
-    const url = `/ask/stream?q=${encodeURIComponent(q)}&page=1&max_tokens=-1&model=${encodeURIComponent(selModel.value)}`;
+    const chatBackendBase = window.CHAT_BACKEND_URL || '';
+
+    const params = new URLSearchParams({
+        q,
+        page: '1',
+        max_tokens: '-1',
+        model: selModel.value,
+    });
+
+    if (currentSessionUuid) {
+        params.append('session_id', currentSessionUuid);
+    }
+
+    const url = `${chatBackendBase}/ask/stream?` + params.toString();
     es = new EventSource(url);
 
     es.addEventListener('status', (e) => {
@@ -610,3 +775,4 @@ if (input && form) {
 
 // Initial load of sessions when the page opens
 loadSessions().catch(console.error);
+

@@ -1,5 +1,6 @@
 # app/routers/ask.py
 
+import asyncio
 import json
 import logging
 import re as _re
@@ -16,8 +17,9 @@ from sse_starlette.sse import EventSourceResponse
 from app.clients.ollama_client import generate_once, stream_generate
 from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
+from app.services.chat_history import load_chat_state, format_history, save_chat_state, CHAT_BACKEND_URL
 from app.services.context_service import build_context_and_sources
-from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt
+from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt, build_title_prompt
 from app.services.search_service import build_search_payload, collect_os_items
 from app.schemas import AskIn, SummariseIn, SummariseOut
 from app.utils.response_cache import make_key, get_cached, set_cached, hash_contexts
@@ -39,6 +41,43 @@ def _cache_params(_temp, _max, _model):
 SYSTEM_PROMPT_TAG_RAG = "rag-v1"
 SYSTEM_PROMPT_TAG_GENERIC = "generic-v1"
 
+
+async def _maybe_update_session_title(session_id: str, question: str, answer: str | None = None):
+    if not session_id or not CHAT_BACKEND_URL:
+        return
+
+    title_prompt = build_title_prompt(question, answer)
+    S = get_settings()
+    try:
+        # small, low-temperature call – we just want a short stable title
+        raw_title = await generate_once(
+            title_prompt,
+            temperature=0.2,
+            num_predict=32,
+        )
+    except httpx.HTTPError:
+        return
+
+    # post-process: single line, trim length
+    title = (raw_title or "").strip()
+    # drop newlines if model returns extra text
+    title = title.splitlines()[0]
+    title = title.strip(" \"'")[:120]
+
+    if not title:
+        return
+
+    url = f"{CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
+    payload = {"title": title}
+
+    timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
+    async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
+        try:
+            await client.patch(url, json=payload)
+        except httpx.HTTPError:
+            # best-effort only
+            return
+
 @router.get("/ask/stream")
 async def ask_stream(
     q: str,
@@ -48,6 +87,7 @@ async def ask_stream(
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     model: Optional[str] = None,
+    session_id: Optional[str] = None,
     request: Request = None,
 ):
     """
@@ -69,6 +109,28 @@ async def ask_stream(
             return
 
         t0 = time.perf_counter()
+
+        # --- Load conversation state for this session (if provided) ---
+        history_text: str = ""
+        initial_llm_ctx: list[int] | None = None
+
+        state = {"messages": [], "llm_context": None}
+        if session_id:
+            # shape: {"messages": [...], "llm_context": [...]}
+            state = await load_chat_state(session_id)
+
+        history_text = format_history(state.get("messages", []))
+        initial_llm_ctx = state.get("llm_context")
+
+        state = {"messages": [], "llm_context": None}
+        if session_id:
+            state = await load_chat_state(session_id)
+
+        history_text = format_history(state.get("messages", []))
+        initial_llm_ctx = state.get("llm_context")
+
+        # is this the first turn of this chat?
+        is_first_turn = not state.get("messages")
 
         # Concurrency gate helpers
         sem = getattr(request.app.state, "gen_semaphore", None)
@@ -123,7 +185,8 @@ async def ask_stream(
 
             _max_tokens = max_tokens if max_tokens is not None else S.MAX_TOKENS
             _temperature = temperature if temperature is not None else S.TEMPERATURE
-            prompt = build_generic_prompt(user_q)
+            # Include short history so the model can stay consistent
+            prompt = build_generic_prompt(user_q, history_text)
 
             # Response cache lookup (no RAG context)
             params = _cache_params(_temperature, _max_tokens, model)
@@ -155,7 +218,7 @@ async def ask_stream(
 
             t_llm_start = time.perf_counter()
             try:
-                ctx = None
+                ctx = initial_llm_ctx
                 answer_chunks: List[str] = []
                 last_done_reason = None
                 hops = 0
@@ -195,6 +258,17 @@ async def ask_stream(
 
             t_llm_end = time.perf_counter()
             full_text = "".join(answer_chunks)
+
+            # Persist the latest KV cache so next turn can reuse it
+            if session_id:
+                await save_chat_state(session_id, ctx)
+
+                # If this is the first turn, ask the LLM to generate a nicer title
+                if is_first_turn:
+                    # run in the background so it doesn't block streaming completion
+                    asyncio.create_task(
+                        _maybe_update_session_title(session_id, user_q, full_text)
+                    )
 
             # Save in cache
             set_cached(ckey, full_text, meta={
@@ -346,11 +420,11 @@ async def ask_stream(
 
         _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
-        prompt = build_prompt(contexts, user_q)
+        prompt = build_prompt(contexts, user_q, history_text)
 
         t_llm_start = time.perf_counter()
         try:
-            ctx = None  # holds Ollama's context array from the last chunk
+            ctx = initial_llm_ctx
             answer_chunks: List[str] = []
             last_done_reason = None
 
@@ -412,6 +486,15 @@ async def ask_stream(
 
         # --- After streaming: emit only the sources actually cited in the text
         full_text = "".join(answer_chunks)
+
+        # Persist the latest KV cache so next turn can reuse it
+        if session_id:
+            await save_chat_state(session_id, ctx)
+
+            if is_first_turn:
+                asyncio.create_task(
+                    _maybe_update_session_title(session_id, user_q, full_text)
+                )
 
         set_cached(ckey, full_text, meta={
             "model": params["model"],

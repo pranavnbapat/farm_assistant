@@ -1,5 +1,9 @@
+# app/config.py
+
 from functools import lru_cache
 from pathlib import Path
+from typing import ClassVar, Dict
+
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,12 +14,23 @@ ENV_PATH = PROJECT_ROOT / ".env"
 # load_dotenv(ENV_PATH)
 
 class Settings(BaseSettings):
+    # --- Environment selector ---
+    FA_ENV: str = Field("local")  # "local" | "dev" | "prd"
+
     # --- App ---
     LOG_LEVEL: str = Field("INFO")
     APP_TITLE: str = "Farm Assistant RAG"
     APP_VERSION: str = "0.1.0"
     ENABLE_DOCS: bool = False
     ENABLE_REDOC: bool = False
+
+    CHAT_BACKEND_URL: str = ""
+
+    CHAT_BACKEND_BASES: ClassVar[Dict[str, str]] = {
+        "local": "http://127.0.0.1:8000",
+        "dev": "https://backend-admin.dev.farmbook.ugent.be",
+        "prd": "https://backend-admin.prd.farmbook.ugent.be",
+    }
 
     # --- OpenSearch proxy ---
     OPENSEARCH_API_URL: str
@@ -62,6 +77,19 @@ class Settings(BaseSettings):
             self.OPENSEARCH_API_USR = None
         if self.OPENSEARCH_API_PWD == "":
             self.OPENSEARCH_API_PWD = None
+
+        backend_by_env = {
+            "local": "http://127.0.0.1:8000",
+            "dev": "https://backend-admin.dev.farmbook.ugent.be",
+            "prd": "https://backend-admin.prd.farmbook.ugent.be",
+        }
+
+        if not self.CHAT_BACKEND_URL:
+            env = (self.FA_ENV or "local").lower()
+            self.CHAT_BACKEND_URL = backend_by_env.get(env, backend_by_env["local"])
+
+        if self.CHAT_BACKEND_URL:
+            self.CHAT_BACKEND_URL = self.CHAT_BACKEND_URL.rstrip("/")
 
         # Trim URLs
         if self.OPENSEARCH_API_URL:
