@@ -30,11 +30,24 @@ S = get_settings()
 router = APIRouter()
 
 
+def _normalize_model(model: Optional[str]) -> str:
+    """
+    Normalize model parameter to use the configured vLLM model.
+    If the model looks like an Ollama name (contains ':'), ignore it.
+    """
+    if model and ":" in model:
+        # This looks like an Ollama model name (e.g., "deepseek-llm:7b-chat-q5_K_M")
+        # Return the configured vLLM model instead
+        logger.warning(f"Received Ollama-style model name '{model}', using VLLM_MODEL '{S.VLLM_MODEL}' instead")
+        return S.VLLM_MODEL
+    return model or S.VLLM_MODEL
+
+
 def _cache_params(_temp, _max, _model):
     return {
         "temperature": _temp,
         "max_tokens": _max,
-        "model": (_model or S.LLM_MODEL),
+        "model": _normalize_model(_model),
         "num_ctx": S.NUM_CTX,
         "top_p": 0.9,
     }
@@ -114,6 +127,11 @@ async def ask_stream(
         if not isinstance(data, str):
             data = json.dumps(data, ensure_ascii=False)
         yield {"event": event, "data": data}
+
+    # Normalize model parameter upfront
+    normalized_model = _normalize_model(model)
+    if model != normalized_model:
+        logger.info(f"Model normalized from '{model}' to '{normalized_model}'")
 
     async def gen():
         user_q = (q or "").strip()
@@ -238,7 +256,7 @@ async def ask_stream(
                     _prompt = prompt if hops == 1 else ""
                     async for obj in stream_generate(
                             _prompt, _temperature, _max_tokens,
-                            context=ctx, model=model, num_ctx=S.NUM_CTX,
+                            context=ctx, model=normalized_model, num_ctx=S.NUM_CTX,
                     ):
                         if "response" in obj and obj["response"]:
                             chunk = obj["response"]
@@ -466,7 +484,7 @@ async def ask_stream(
                             _temperature,
                             _max_tokens,
                             context=ctx,
-                            model=model,
+                            model=normalized_model,
                             num_ctx=S.NUM_CTX,
                     ):
                         # stream tokens
