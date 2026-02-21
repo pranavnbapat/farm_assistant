@@ -32,9 +32,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (!resp.ok) {
                 // Non-200 from FastAPI
-                const text = await resp.text().catch(() => "");
-                console.error("Login error:", resp.status, text);
-                statusEl.textContent = "Login failed";
+                let errorMsg = "Login failed";
+                try {
+                    const errorData = await resp.json();
+                    errorMsg = errorData.detail || errorData.message || `Login failed (${resp.status})`;
+                } catch (e) {
+                    // If JSON parsing fails, try to get raw text
+                    const text = await resp.text().catch(() => "");
+                    if (text) errorMsg = text.substring(0, 200);
+                }
+                console.error("Login error:", resp.status, errorMsg);
+                statusEl.textContent = errorMsg;
                 return;
             }
 

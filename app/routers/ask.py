@@ -1,6 +1,7 @@
 # app/routers/ask.py
 
 import asyncio
+import hashlib
 import json
 import logging
 import re as _re
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
 # from app.clients import hf_local_client
-from app.clients.ollama_client import generate_once, stream_generate
+from app.clients.vllm_client import generate_once, stream_generate
 from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
 from app.services.chat_history import load_chat_state, format_history, save_chat_state, CHAT_BACKEND_URL
@@ -37,6 +38,19 @@ def _cache_params(_temp, _max, _model):
         "num_ctx": S.NUM_CTX,
         "top_p": 0.9,
     }
+
+
+def _history_scope(history_text: str) -> str:
+    """
+    Turn the current text history into a short, stable hash.
+
+    This ensures the cache key changes when the conversation history changes,
+    so responses reflect the actual context of this thread.
+    """
+    if not history_text:
+        return ""
+    return hashlib.sha256(history_text.encode("utf-8")).hexdigest()[:16]
+
 
 SYSTEM_PROMPT_TAG_RAG = "rag-v1"
 SYSTEM_PROMPT_TAG_GENERIC = "generic-v1"
@@ -122,13 +136,6 @@ async def ask_stream(
         history_text = format_history(state.get("messages", []))
         initial_llm_ctx = state.get("llm_context")
 
-        state = {"messages": [], "llm_context": None}
-        if session_id:
-            state = await load_chat_state(session_id)
-
-        history_text = format_history(state.get("messages", []))
-        initial_llm_ctx = state.get("llm_context")
-
         # is this the first turn of this chat?
         is_first_turn = not state.get("messages")
 
@@ -190,12 +197,14 @@ async def ask_stream(
 
             # Response cache lookup (no RAG context)
             params = _cache_params(_temperature, _max_tokens, model)
+            history_scope = _history_scope(history_text)
             ckey = make_key(
                 user_q=user_q,
                 system_tag=SYSTEM_PROMPT_TAG_GENERIC,
                 model_id=params["model"],
                 params=params,
-                ctx_hash="",  # no context
+                ctx_hash="",
+                user_scope=history_scope,
             )
             cached = get_cached(ckey)
             if cached:
@@ -249,8 +258,19 @@ async def ask_stream(
 
                     if last_done_reason != "length":
                         break
+            except httpx.ConnectError as e:
+                logger.error(f"Cannot connect to LLM backend: {e}")
+                async for x in emit("error", {"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
+                    yield x
+                return
             except httpx.HTTPStatusError as e:
+                logger.error(f"LLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
                 async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
+                    yield x
+                return
+            except Exception as e:
+                logger.error(f"Unexpected LLM error: {e}")
+                async for x in emit("error", {"stage": "LLM", "message": f"Error: {str(e)}"}):
                     yield x
                 return
             finally:
@@ -381,6 +401,7 @@ async def ask_stream(
         _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         params = _cache_params(_temperature, _max_tokens, model)
+        history_scope = _history_scope(history_text)
 
         ckey = make_key(
             user_q=user_q,
@@ -388,7 +409,7 @@ async def ask_stream(
             model_id=params["model"],
             params=params,
             ctx_hash=ctx_h,
-            user_scope="",  # fill with tenant/user id if needed later
+            user_scope=history_scope,
         )
         cached = get_cached(ckey)
         if cached:
@@ -470,13 +491,35 @@ async def ask_stream(
                     # if not length-limited, we're done
                     if last_done_reason != "length":
                         break
+                except httpx.ConnectError as e:
+                    logger.error(f"Cannot connect to LLM backend: {e}")
+                    async for x in emit("error", {"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
+                        yield x
+                    return
                 except httpx.HTTPStatusError as e:
+                    logger.error(f"LLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
                     async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
                         yield x
                     return
+                except Exception as e:
+                    logger.error(f"Unexpected LLM error: {e}")
+                    async for x in emit("error", {"stage": "LLM", "message": f"Error: {str(e)}"}):
+                        yield x
+                    return
 
+        except httpx.ConnectError as e:
+            logger.error(f"Cannot connect to LLM backend: {e}")
+            async for x in emit("error", {"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
+                yield x
+            return
         except httpx.HTTPStatusError as e:
+            logger.error(f"LLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
             async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
+                yield x
+            return
+        except Exception as e:
+            logger.error(f"Unexpected LLM error: {e}")
+            async for x in emit("error", {"stage": "LLM", "message": f"Error: {str(e)}"}):
                 yield x
             return
         finally:

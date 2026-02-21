@@ -37,15 +37,16 @@
                     <input id="question" type="text" placeholder="Ask a question…" autocomplete="off" />
 
                     <select id="model" aria-label="Model" class="hidden">
+<!--                        <option value="deepseek-r1:8b" selected>deepseek-r1:8b</option>-->
                         <option value="deepseek-llm:7b-chat-q5_K_M" selected>DeepSeek 7B Chat Q5_K_M</option>
                     </select>
                     <button id="send" type="submit">Send</button>
                     <button id="stop" type="button" class="hidden">Stop</button>
                 </form>
 
-                <div class="audio-row">
-                    <audio id="live-audio" preload="none" controls></audio>
-                </div>
+<!--                <div class="audio-row">-->
+<!--                    <audio id="live-audio" preload="none" controls></audio>-->
+<!--                </div>-->
             </div>
         </div>
     </div>
@@ -115,7 +116,9 @@
             });
         })();
 
-        window.CHAT_BACKEND_URL = "";
+        // FA_ENV is passed for reference, but CHAT_BACKEND_URL should be empty
+        // for same-origin requests to the FastAPI backend
+        window.CHAT_BACKEND_URL = "";  // Empty = same origin
     </script>
 
     <script src="/static/js/tts.js"></script>

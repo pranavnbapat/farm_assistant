@@ -39,9 +39,18 @@ class Settings(BaseSettings):
     VERIFY_SSL: bool = True
     OS_API_PATH: str = "/neural_search_relevant"
 
-    # --- LLM / Ollama ---
+    # --- LLM / vLLM ---
+    # VLLM_URL is the primary setting, but also check RUNPOD_VLLM_HOST for backward compatibility
+    VLLM_URL: str = "http://localhost:8000"
+    VLLM_MODEL: str = "qwen3-30b-a3b-awq"
+    VLLM_API_KEY: str | None = None
+    VLLM_MAX_MODEL_LEN: int = 131072
+    RUNPOD_VLLM_HOST: str = ""  # Legacy setting, will be used if VLLM_URL is default
+    
+    # Legacy Ollama settings (for backward compatibility)
     OLLAMA_URL: str = "http://ollama:11434"
-    LLM_MODEL: str = "deepseek-llm:7b"
+    LLM_MODEL: str = "deepseek-llm:7b-chat-q5_K_M"
+    
     MAX_TOKENS: int = -1
     TEMPERATURE: float = 0.4
     NUM_CTX: int = 4096
@@ -96,6 +105,12 @@ class Settings(BaseSettings):
             self.OPENSEARCH_API_URL = self.OPENSEARCH_API_URL.rstrip("/")
         if self.OLLAMA_URL:
             self.OLLAMA_URL = self.OLLAMA_URL.rstrip("/")
+        
+        # vLLM URL: use RUNPOD_VLLM_HOST as fallback if VLLM_URL is still the default
+        if self.VLLM_URL == "http://localhost:8000" and self.RUNPOD_VLLM_HOST:
+            self.VLLM_URL = self.RUNPOD_VLLM_HOST.rstrip("/")
+        elif self.VLLM_URL:
+            self.VLLM_URL = self.VLLM_URL.rstrip("/")
 
         # Clamp/validate knobs
         # self.TEMPERATURE = max(0.0, min(2.0, float(self.TEMPERATURE)))

@@ -20,7 +20,7 @@ class ChatTurn:
 @dataclass
 class ChatState:
     turns: List[ChatTurn] = field(default_factory=list)
-    llm_context: Optional[list[int]] = None  # Ollama KV cache from last reply
+    llm_context: Optional[list[int]] = None  # Legacy: Ollama KV cache (not used with vLLM)
 
 # Very simple in-memory store – fine for now.
 # For prod you can replace this with Redis or your Django DB.
@@ -55,10 +55,15 @@ async def load_chat_state(session_id: Optional[str]) -> dict:
 
 async def save_chat_state(session_id: Optional[str], llm_context: Optional[list[int]]) -> None:
     """
-    Persist the latest Ollama context back to Django for this session.
-    Adjust URL/shape to your API.
+    Persist the latest LLM context back to Django for this session.
+    Note: vLLM is stateless and doesn't support KV cache passing.
+    This is kept for backward compatibility with Ollama.
     """
     if not session_id or not CHAT_BACKEND_URL:
+        return
+
+    # vLLM doesn't support context passing, so we skip saving
+    if llm_context is None:
         return
 
     url = f"{CHAT_BACKEND_URL}/api/chat/{session_id}/state/"

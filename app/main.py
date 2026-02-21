@@ -13,7 +13,9 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Request
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from app.config import get_settings
@@ -29,16 +31,26 @@ logging.basicConfig(
 logger = logging.getLogger("farm-assistant")
 
 
-FA_ENV = os.getenv("FA_ENV", "local")
-
+# LOGIN_ENDPOINTS for different environments
 LOGIN_ENDPOINTS = {
     "local": "http://127.0.0.1:8000/fastapi/login/",
     "dev":   "https://backend-admin.dev.farmbook.ugent.be/fastapi/login/",
     "prd":   "https://backend-admin.prd.farmbook.ugent.be/fastapi/login/",
 }
 
-LOGIN_URL = LOGIN_ENDPOINTS.get(FA_ENV, LOGIN_ENDPOINTS["local"])
+# Get auth settings from environment (these are NOT in pydantic settings)
 ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "")
+AUTH_BACKEND_URL = os.getenv("AUTH_BACKEND_URL", "")
+
+# Determine LOGIN_URL based on settings
+if AUTH_BACKEND_URL:
+    # Explicit override takes precedence
+    LOGIN_URL = AUTH_BACKEND_URL.rstrip("/") + "/fastapi/login/"
+else:
+    # Use FA_ENV from pydantic settings (reads from .env properly)
+    LOGIN_URL = LOGIN_ENDPOINTS.get(S.FA_ENV, LOGIN_ENDPOINTS["local"])
+
+logger.info(f"FA_ENV={S.FA_ENV}, Using auth backend: {LOGIN_URL}")
 
 ENABLE_DOCS: bool = True
 
@@ -70,6 +82,7 @@ app.add_middleware(
 )
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 LOGIN_HTML = TEMPLATES_DIR / "login.html"
 CHAT_HTML = TEMPLATES_DIR / "ask_stream.html"
@@ -94,9 +107,16 @@ def login_page():
 
 
 @app.get("/chat", response_class=HTMLResponse)
-def chat_page():
+def chat_page(request: Request):
     """Chat UI – frontend will redirect to / if not logged in."""
-    return CHAT_HTML.read_text(encoding="utf-8")
+    return templates.TemplateResponse(
+        "ask_stream.html",
+        {
+            "request": request,
+            "FA_ENV": S.FA_ENV,
+        },
+    )
+    # return CHAT_HTML.read_text(encoding="utf-8")
 
 class LoginBody(BaseModel):
     email: str
@@ -114,10 +134,19 @@ async def api_login(body: LoginBody):
     if ADMIN_API_TOKEN:
         headers["Authorization"] = f"Bearer {ADMIN_API_TOKEN}"
 
+    logger.info(f"Attempting login for user: {body.email} to {LOGIN_URL}")
+
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=True) as client:
             upstream = await client.post(LOGIN_URL, json=payload, headers=headers)
+    except httpx.ConnectError as exc:
+        logger.error(f"Cannot connect to auth backend at {LOGIN_URL}: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Auth backend is unavailable. Please check that the backend server is running at {LOGIN_URL}"
+        )
     except httpx.RequestError as exc:
+        logger.error(f"Request error to auth backend: {exc}")
         raise HTTPException(
             status_code=502,
             detail=f"Unable to reach auth backend: {exc}"
@@ -126,18 +155,23 @@ async def api_login(body: LoginBody):
     if upstream.status_code != 200:
         # Login failed on the auth backend
         try:
+            error_data = upstream.json()
+            error_text = error_data.get("message", error_data.get("detail", upstream.text))
+        except ValueError:
             error_text = upstream.text
-        except Exception:
-            error_text = ""
+        
+        logger.warning(f"Login failed for {body.email}: HTTP {upstream.status_code} - {error_text}")
         raise HTTPException(
             status_code=upstream.status_code,
-            detail=f"Auth backend error: {error_text}"
+            detail=error_text or "Authentication failed"
         )
 
     # Return exactly what the auth backend sent (token etc.)
     try:
         data = upstream.json()
+        logger.info(f"Login successful for user: {body.email}")
     except ValueError:
+        logger.error("Auth backend returned non-JSON response")
         raise HTTPException(
             status_code=502,
             detail="Auth backend returned non-JSON response"
