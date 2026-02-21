@@ -1,6 +1,7 @@
 # app/routers/ask.py
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -20,14 +21,50 @@ from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
 from app.services.chat_history import load_chat_state, format_history, save_chat_state, CHAT_BACKEND_URL
 from app.services.context_service import build_context_and_sources
-from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt, build_title_prompt
+from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt, build_title_prompt, is_agriculture_related
 from app.services.search_service import build_search_payload, collect_os_items
+from app.services.user_profile_service import UserProfileService
 from app.schemas import AskIn, SummariseIn, SummariseOut
 from app.utils.response_cache import make_key, get_cached, set_cached, hash_contexts
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
 router = APIRouter()
+
+
+def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
+    """Extract user UUID from JWT token string."""
+    if not auth_token.startswith("Bearer "):
+        return None
+    
+    token = auth_token[7:]  # Remove "Bearer " prefix
+    
+    try:
+        # JWT tokens are base64 encoded in 3 parts: header.payload.signature
+        parts = token.split(".")
+        if len(parts) != 3:
+            logger.warning(f"Invalid JWT format: {len(parts)} parts instead of 3")
+            return None
+        
+        # Decode payload (middle part)
+        import base64
+        payload = parts[1]
+        # Add padding if needed
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        
+        decoded = base64.urlsafe_b64decode(payload)
+        token_data = json.loads(decoded)
+        
+        # Try common fields for user ID
+        user_id = token_data.get("uuid") or token_data.get("user_id") or token_data.get("sub")
+        if user_id:
+            logger.debug(f"Extracted user_id from JWT: {user_id}")
+        return str(user_id) if user_id else None
+    except Exception as e:
+        logger.warning(f"Failed to decode JWT: {e}")
+        return None
 
 
 def _normalize_model(model: Optional[str]) -> str:
@@ -80,7 +117,7 @@ async def _maybe_update_session_title(session_id: str, question: str, answer: st
         raw_title = await generate_once(
             title_prompt,
             temperature=0.2,
-            num_predict=32,
+            max_tokens=32,
         )
     except httpx.HTTPError:
         return
@@ -100,10 +137,14 @@ async def _maybe_update_session_title(session_id: str, question: str, answer: st
     timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
         try:
-            await client.patch(url, json=payload)
-        except httpx.HTTPError:
+            r = await client.patch(url, json=payload)
+            logger.info(f"Updated session title: {r.status_code}")
+        except httpx.HTTPStatusError as e:
+            # Log specific error but don't fail
+            logger.warning(f"Failed to update session title: HTTP {e.response.status_code} - {e.response.text[:200]}")
+        except httpx.HTTPError as e:
             # best-effort only
-            return
+            logger.warning(f"Failed to update session title: {e}")
 
 @router.get("/ask/stream")
 async def ask_stream(
@@ -140,7 +181,27 @@ async def ask_stream(
                 yield x
             return
 
+        # --- Check domain relevance ---
+        is_agri, reason = is_agriculture_related(user_q)
+        logger.info(f"Domain check: is_agriculture={is_agri}, reason={reason}, question='{user_q[:50]}...'")
+        
+        # Note: We don't reject here - we let the LLM handle it with the domain restriction prompt
+        # This gives us logging for analytics while allowing the LLM to politely decline
+
         t0 = time.perf_counter()
+        
+        # --- Extract auth info early ---
+        # Try header first, then query param (for SSE which can't send headers)
+        auth_token = ""
+        if request:
+            auth_token = request.headers.get("Authorization", "")
+            # Fallback to query param for SSE
+            if not auth_token:
+                auth_token = request.query_params.get("auth_token", "")
+        
+        user_uuid = _extract_user_uuid_from_token(auth_token) if auth_token else None
+        
+        logger.info(f"Auth extracted: user_uuid={user_uuid}, has_auth={bool(auth_token)}")
 
         # --- Load conversation state for this session (if provided) ---
         history_text: str = ""
@@ -149,13 +210,25 @@ async def ask_stream(
         state = {"messages": [], "llm_context": None}
         if session_id:
             # shape: {"messages": [...], "llm_context": [...]}
-            state = await load_chat_state(session_id)
+            state = await load_chat_state(session_id, auth_token)
 
         history_text = format_history(state.get("messages", []))
         initial_llm_ctx = state.get("llm_context")
 
         # is this the first turn of this chat?
         is_first_turn = not state.get("messages")
+
+        # --- Load user profile for personalization ---
+        profile_context = ""
+        
+        if user_uuid and auth_token:
+            try:
+                profile = await UserProfileService.get_or_create_profile(user_uuid, auth_token)
+                facts = await UserProfileService.get_facts(user_uuid, auth_token, limit=5)
+                profile_context = UserProfileService.build_profile_context(profile, facts)
+                logger.info(f"Loaded profile for user {user_uuid}")
+            except Exception as e:
+                logger.warning(f"Failed to load user profile: {e}")
 
         # Concurrency gate helpers
         sem = getattr(request.app.state, "gen_semaphore", None)
@@ -210,8 +283,8 @@ async def ask_stream(
 
             _max_tokens = max_tokens if max_tokens is not None else S.MAX_TOKENS
             _temperature = temperature if temperature is not None else S.TEMPERATURE
-            # Include short history so the model can stay consistent
-            prompt = build_generic_prompt(user_q, history_text)
+            # Include short history and profile so the model can stay consistent
+            prompt = build_generic_prompt(user_q, history_text, profile_context)
 
             # Response cache lookup (no RAG context)
             params = _cache_params(_temperature, _max_tokens, model)
@@ -318,6 +391,15 @@ async def ask_stream(
             # No sources in LLM-only; still send an empty list so UI is deterministic
             async for x in emit("sources", []):
                 yield x
+
+            # --- Update user profile with this conversation turn (fire-and-forget) ---
+            if user_uuid and session_id and auth_token:
+                logger.info(f"Triggering profile update for user {user_uuid} (LLM-only)")
+                asyncio.create_task(
+                    UserProfileService.process_conversation_turn(
+                        user_uuid, session_id, user_q, full_text, auth_token
+                    )
+                )
 
             total_ms = int((time.perf_counter() - t0) * 1000)
             search_ms = 0
@@ -459,7 +541,7 @@ async def ask_stream(
 
         _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
-        prompt = build_prompt(contexts, user_q, history_text)
+        prompt = build_prompt(contexts, user_q, history_text, profile_context)
 
         t_llm_start = time.perf_counter()
         try:
@@ -556,6 +638,17 @@ async def ask_stream(
                 asyncio.create_task(
                     _maybe_update_session_title(session_id, user_q, full_text)
                 )
+        
+        # --- Update user profile with this conversation turn (fire-and-forget) ---
+        if user_uuid and session_id and auth_token:
+            logger.info(f"Triggering profile update for user {user_uuid}")
+            asyncio.create_task(
+                UserProfileService.process_conversation_turn(
+                    user_uuid, session_id, user_q, full_text, auth_token
+                )
+            )
+        else:
+            logger.debug(f"Skipping profile update: user_uuid={user_uuid}, session_id={session_id}, has_auth={bool(auth_token)}")
 
         set_cached(ckey, full_text, meta={
             "model": params["model"],

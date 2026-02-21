@@ -39,6 +39,34 @@
                     <select id="model" aria-label="Model" class="hidden">
                         <option value="qwen3-30b-a3b-awq" selected>Qwen3 30B A3B AWQ</option>
                     </select>
+                    
+                    <select id="voice-lang" aria-label="Voice Language" title="Speech Recognition Language">
+                        <option value="en-GB" selected>🇬🇧 English</option>
+                        <option value="nl-NL">🇳🇱 Nederlands</option>
+                        <option value="de-DE">🇩🇪 Deutsch</option>
+                        <option value="fr-FR">🇫🇷 Français</option>
+                        <option value="es-ES">🇪🇸 Español</option>
+                        <option value="it-IT">🇮🇹 Italiano</option>
+                        <option value="pt-PT">🇵🇹 Português</option>
+                        <option value="pl-PL">🇵🇱 Polski</option>
+                        <option value="ro-RO">🇷🇴 Română</option>
+                        <option value="bg-BG">🇧🇬 Български</option>
+                        <option value="hr-HR">🇭🇷 Hrvatski</option>
+                        <option value="cs-CZ">🇨🇿 Čeština</option>
+                        <option value="da-DK">🇩🇰 Dansk</option>
+                        <option value="et-EE">🇪🇪 Eesti</option>
+                        <option value="fi-FI">🇫🇮 Suomi</option>
+                        <option value="el-GR">🇬🇷 Ελληνικά</option>
+                        <option value="hu-HU">🇭🇺 Magyar</option>
+                        <option value="ga-IE">🇮🇪 Gaeilge</option>
+                        <option value="lv-LV">🇱🇻 Latviešu</option>
+                        <option value="lt-LT">🇱🇹 Lietuvių</option>
+                        <option value="mt-MT">🇲🇹 Malti</option>
+                        <option value="sk-SK">🇸🇰 Slovenčina</option>
+                        <option value="sl-SI">🇸🇮 Slovenščina</option>
+                        <option value="sv-SE">🇸🇪 Svenska</option>
+                    </select>
+                    
                     <button id="send" type="submit">Send</button>
                     <button id="stop" type="button" class="hidden">Stop</button>
                 </form>
@@ -115,12 +143,11 @@
             });
         })();
 
-        // FA_ENV is passed for reference, but CHAT_BACKEND_URL should be empty
-        // for same-origin requests to the FastAPI backend
-        window.CHAT_BACKEND_URL = "";  // Empty = same origin
+        // FA_ENV is passed for chat.js to determine backend URLs
+        window.FA_ENV = "{{ FA_ENV }}";
     </script>
 
-    <script src="/static/js/tts.js"></script>
+    <script src="/static/js/voice.js"></script>
     <script src="/static/js/chat.js"></script>
 </body>
 </html>

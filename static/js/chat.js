@@ -8,16 +8,10 @@ const LS_EMAIL = 'fa_email';
 
 const FA_ENV = window.FA_ENV || 'local';
 
-// Backend (Django) bases – used for sessions + logging
-const BACKEND_BASES = {
-    local: 'http://127.0.0.1:8000',
-    dev:   'https://backend-admin.dev.farmbook.ugent.be',
-    prd:   'https://backend-admin.prd.farmbook.ugent.be',
-};
-
-const BACKEND_BASE   = BACKEND_BASES[FA_ENV] || BACKEND_BASES.local;
-const SESSIONS_URL   = `${BACKEND_BASE}/chat/sessions/`;
-const LOG_TURN_URL   = `${BACKEND_BASE}/chat/log-turn/`;
+// Use proxy endpoints through FastAPI (avoids CORS issues)
+// The FastAPI backend will forward these to the Django backend
+const SESSIONS_URL   = '/proxy/chat/sessions/';
+const LOG_TURN_URL   = '/proxy/chat/log-turn/';
 
 // Current auth token and email from login page / login.js
 let authToken    = localStorage.getItem(LS_TOKEN);
@@ -81,7 +75,7 @@ function forceLogout(reason) {
             localStorage.getItem('fa_email');
 
         if (email) {
-            fetch(`${BACKEND_BASE}/fastapi/logout/`, {
+            fetch('/proxy/logout/', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email }),
@@ -380,9 +374,19 @@ if (newChatBtn) {
 
 // Log each completed Q&A turn to Django
 async function logChatTurnToBackend(userText, assistantText, latencyMs) {
-    if (!authToken) return;
-    if (!userText || !assistantText) return;
+    console.log('Logging chat turn:', { userText: userText?.substring(0, 50), assistantText: assistantText?.substring(0, 50), session: currentSessionUuid });
+    
+    if (!authToken) {
+        console.warn('Cannot log: no auth token');
+        return;
+    }
+    if (!userText || !assistantText) {
+        console.warn('Cannot log: missing text', { userText, assistantText });
+        return;
+    }
 
+    console.log('Sending to:', LOG_TURN_URL);
+    
     try {
         const res = await fetch(LOG_TURN_URL, {
             method: 'POST',
@@ -649,7 +653,14 @@ function startStream(q) {
         params.append('session_id', currentSessionUuid);
     }
 
+    // Add auth token as query param since SSE doesn't support custom headers
+    console.log('DEBUG: authToken exists?', !!authToken, 'token length:', authToken ? authToken.length : 0);
+    if (authToken) {
+        params.append('auth_token', 'Bearer ' + authToken);
+    }
+    
     const url = `${chatBackendBase}/ask/stream?` + params.toString();
+    console.log('DEBUG: SSE URL (without token):', url.replace(/auth_token=Bearer%20[^&]+/, 'auth_token=***'));
     es = new EventSource(url);
 
     es.addEventListener('status', (e) => {

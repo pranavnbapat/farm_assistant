@@ -1,13 +1,15 @@
 # app/services/chat_history.py
 
 import httpx
+import logging
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 
 from app.config import get_settings
 
 S = get_settings()
+logger = logging.getLogger("farm-assistant.chat_history")
 
 CHAT_BACKEND_URL = (S.CHAT_BACKEND_URL or "").rstrip("/")
 
@@ -30,28 +32,39 @@ _STORE: Dict[str, ChatState] = {}
 _MAX_TURNS = 10
 
 
-async def load_chat_state(session_id: Optional[str]) -> dict:
+async def load_chat_state(session_id: Optional[str], auth_token: Optional[str] = None) -> dict:
+    """Load chat history from Django backend."""
     if not session_id or not CHAT_BACKEND_URL:
         return {"messages": [], "llm_context": None}
 
     url = f"{CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
     timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
+    
+    headers = {}
+    if auth_token:
+        headers["Authorization"] = auth_token
 
     async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
         try:
-            r = await client.get(url)
+            r = await client.get(url, headers=headers)
             r.raise_for_status()
-        except httpx.HTTPError:
+            
+            data = r.json() or {}
+            msgs = data.get("messages", [])
+            logger.info(f"Loaded {len(msgs)} messages from session {session_id[:8]}...")
+            return {"messages": msgs, "llm_context": None}
+            
+        except httpx.HTTPStatusError as e:
+            # 401/403 means auth issue - log but don't crash
+            if e.response.status_code in (401, 403):
+                logger.warning(f"Auth failed when loading chat history (HTTP {e.response.status_code}). Continuing without history.")
+            else:
+                logger.warning(f"Failed to load chat state: HTTP {e.response.status_code}")
             return {"messages": [], "llm_context": None}
-
-        data = r.json() or {}
-
-        msgs = data.get("messages", [])
-
-        return {
-            "messages": msgs,
-            "llm_context": None,
-        }
+            
+        except httpx.HTTPError as e:
+            logger.warning(f"Failed to load chat state: {e}. Continuing without history.")
+            return {"messages": [], "llm_context": None}
 
 async def save_chat_state(session_id: Optional[str], llm_context: Optional[list[int]]) -> None:
     """
