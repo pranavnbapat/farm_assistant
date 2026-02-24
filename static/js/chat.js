@@ -437,6 +437,18 @@ const btnSend = document.getElementById('send');
 const btnStop = document.getElementById('stop');
 const selModel = document.getElementById('model');
 
+// Auto-resize textarea
+function autoResizeTextarea() {
+    if (!input) return;
+    input.style.height = 'auto';
+    const newHeight = Math.min(input.scrollHeight, 200); // max-height: 200px
+    input.style.height = newHeight + 'px';
+}
+
+if (input) {
+    input.addEventListener('input', autoResizeTextarea);
+}
+
 let es = null;
 let answerNode = null;
 let statusNode = null;
@@ -683,7 +695,9 @@ function startStream(q) {
 
     es.addEventListener('sources', (e) => {
         try {
-            pendingSources = JSON.parse(e.data) || [];
+            const parsed = JSON.parse(e.data);
+            // null or empty array means explicitly clear sources
+            pendingSources = parsed || [];
         } catch {
             pendingSources = [];
         }
@@ -762,6 +776,7 @@ if (form) {
 
         startStream(q);
         input.value = '';
+        input.style.height = 'auto';
         input.focus();
     });
 }

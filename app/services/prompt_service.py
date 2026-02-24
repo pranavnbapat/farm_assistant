@@ -261,3 +261,58 @@ def build_title_prompt(question: str, answer: str | None = None) -> str:
     base += "\nTitle:"
     return base
 
+
+def build_intent_classification_prompt(question: str, history: Optional[str] = None) -> str:
+    """
+    Build a prompt for the LLM to classify whether RAG is needed or not.
+    The LLM should respond with either:
+    - "RAG_NEEDED" - if external agricultural documents would help answer this
+    - A direct answer - if this is a simple greeting, chitchat, or can be answered from general knowledge
+    """
+    history_block = ""
+    if history:
+        history_block = (
+            "\n=== CONVERSATION HISTORY ===\n"
+            f"{history}\n"
+            "=== END HISTORY ===\n"
+        )
+    
+    return (
+        "You are an intent classifier for an agricultural assistant. "
+        "Decide if this question requires external agricultural documents (RAG) or can be answered directly.\n\n"
+        "Rules:\n"
+        "1. Respond with exactly 'RAG_NEEDED' if:\n"
+        "   - The question asks about specific agricultural facts, data, research, or practices\n"
+        "   - The question mentions crops, livestock, pests, diseases, machinery, regulations\n"
+        "   - The question would benefit from external knowledge base search\n"
+        "   - The question continues a previous agricultural discussion\n\n"
+        "2. Respond with a direct answer (NOT 'RAG_NEEDED') if:\n"
+        "   - Simple greetings (hello, hi, good morning)\n"
+        "   - General chitchat (how are you, what's your name)\n"
+        "   - Questions about your capabilities or what you can do\n"
+        "   - Clarification questions like 'yes please', 'tell me more', 'go on'\n"
+        "   - Very short responses that continue the conversation\n"
+        "   - Questions that can be fully answered from general knowledge\n\n"
+        f"{history_block}"
+        f"User question: {question}\n\n"
+        "Respond with either 'RAG_NEEDED' OR provide a helpful direct answer. "
+        "Do NOT explain your choice. Be concise."
+    )
+
+
+def build_context_aware_prompt(question: str, last_assistant_message: str) -> str:
+    """
+    Build a prompt to handle short/ambiguous responses like 'yes please', 'tell me more'.
+    This re-injects context from the last assistant message to help the LLM understand.
+    """
+    return (
+        "The user gave a brief response. Based on the conversation context, provide a helpful answer.\n\n"
+        f"Previous assistant message: {last_assistant_message}\n\n"
+        f"User's brief response: {question}\n\n"
+        "Instructions:\n"
+        "- Interpret their brief response in context of the previous message\n"
+        "- If they said 'yes please' or similar, assume they want you to continue/elaborate\n"
+        "- Provide a helpful, specific response\n"
+        "Assistant:"
+    )
+

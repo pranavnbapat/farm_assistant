@@ -21,7 +21,10 @@ from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
 from app.services.chat_history import load_chat_state, format_history, save_chat_state, CHAT_BACKEND_URL
 from app.services.context_service import build_context_and_sources
-from app.services.prompt_service import build_prompt, build_summary_prompt, build_generic_prompt, build_title_prompt, is_agriculture_related
+from app.services.prompt_service import (
+    build_prompt, build_summary_prompt, build_generic_prompt, build_title_prompt,
+    build_intent_classification_prompt, build_context_aware_prompt, is_agriculture_related
+)
 from app.services.search_service import build_search_payload, collect_os_items
 from app.services.user_profile_service import UserProfileService
 from app.schemas import AskIn, SummariseIn, SummariseOut
@@ -251,40 +254,76 @@ async def ask_stream(
             except Exception:
                 pass
 
-        # --- Intent routing ---
-        async for x in emit("status", {"stage": "Intent", "message": "Routing query..."}):
+        # --- Intent routing using LLM ---
+        async for x in emit("status", {"stage": "Intent", "message": "Analyzing query..."}):
             yield x
 
-        intent = {"path": "RAG"}  # default fallback
+        # Determine if this is a short/ambiguous response that needs context
+        last_assistant_msg = ""
+        if state.get("messages"):
+            # Find the last assistant message
+            for msg in reversed(state["messages"]):
+                if msg.get("role") == "assistant":
+                    last_assistant_msg = msg.get("content", "")
+                    break
+        
+        # Check for ambiguous short responses
+        is_ambiguous_short = (
+            len(user_q.split()) <= 3 and 
+            last_assistant_msg and
+            any(word in user_q.lower() for word in ["yes", "no", "please", "more", "go on", "tell me", "why", "how"])
+        )
+        
+        # Build intent classification prompt
+        intent_prompt = build_intent_classification_prompt(user_q, history_text if history_text else None)
+        
+        intent_response = ""
+        use_rag = True  # default to RAG for safety
+        direct_answer = None
+        
         try:
-            timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
-            async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
-                ir = await client.post(
-                    S.INTENT_ROUTER_URL,
-                    json={"query": user_q, "force_prepare_if_needed": True},
-                )
-                print(ir)
-                ir.raise_for_status()
-                intent = ir.json() or intent
-        except httpx.HTTPError as e:
-            # Soft-fail to RAG if router is down
-            logger.warning(f"Intent router unavailable, falling back to RAG: {e}")
+            # Use low temperature for deterministic classification
+            intent_response = await generate_once(
+                intent_prompt,
+                temperature=0.1,
+                max_tokens=100,  # Limit to get concise response
+                model=normalized_model,
+            )
+            intent_response = intent_response.strip()
+            logger.info(f"Intent classification response: {intent_response[:100]}...")
+            
+            # Check if LLM wants RAG or provided direct answer
+            if intent_response.upper() == "RAG_NEEDED" or "RAG_NEEDED" in intent_response.upper():
+                use_rag = True
+                logger.info("Intent: RAG_NEEDED")
+            else:
+                # LLM provided a direct answer
+                use_rag = False
+                direct_answer = intent_response
+                logger.info("Intent: LLM_ONLY (direct answer provided)")
+                
+        except Exception as e:
+            logger.warning(f"Intent classification failed, defaulting to RAG: {e}")
+            use_rag = True
 
-        path = str(intent.get("path") or "RAG").upper()
-        print("path: " , path)
-
-        async for x in emit("meta", {"intent": intent}):
+        async for x in emit("meta", {"intent": "RAG" if use_rag else "LLM_ONLY", "ambiguous_short": is_ambiguous_short}):
             yield x
 
-        if path == "LLM_ONLY":
+        if not use_rag:
             # --- LLM-only short-circuit (no search/context) ---
             async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
                 yield x
 
             _max_tokens = max_tokens if max_tokens is not None else S.MAX_TOKENS
             _temperature = temperature if temperature is not None else S.TEMPERATURE
-            # Include short history and profile so the model can stay consistent
-            prompt = build_generic_prompt(user_q, history_text, profile_context)
+            
+            # For ambiguous short responses, use context-aware prompt
+            if is_ambiguous_short and last_assistant_msg:
+                prompt = build_context_aware_prompt(user_q, last_assistant_msg)
+                logger.info(f"Using context-aware prompt for ambiguous response: '{user_q}'")
+            else:
+                # Include short history and profile so the model can stay consistent
+                prompt = build_generic_prompt(user_q, history_text, profile_context)
 
             # Response cache lookup (no RAG context)
             params = _cache_params(_temperature, _max_tokens, model)
@@ -388,8 +427,8 @@ async def ask_stream(
                 "system_tag": SYSTEM_PROMPT_TAG_GENERIC,
             })
 
-            # No sources in LLM-only; still send an empty list so UI is deterministic
-            async for x in emit("sources", []):
+            # No sources in LLM-only; emit null to explicitly clear any previous sources
+            async for x in emit("sources", None):
                 yield x
 
             # --- Update user profile with this conversation turn (fire-and-forget) ---
@@ -517,8 +556,8 @@ async def ask_stream(
                 async for x in emit("token", tok + " "):
                     yield x
 
-            fallback = all_sources[: min(len(all_sources), 5)]
-            async for x in emit("sources", fallback):
+            # For cached responses, emit empty sources (original citations not stored)
+            async for x in emit("sources", []):
                 yield x
 
             total_ms = int((time.perf_counter() - t0) * 1000)
@@ -683,11 +722,9 @@ async def ask_stream(
                 async for x in emit("sources", cited_sources):
                     yield x
         else:
-            # Fallback: if the model didn't cite explicitly, send top few so UI isn’t empty
-            fallback = all_sources[: min(len(all_sources), 5)]
-            if fallback:
-                async for x in emit("sources", fallback):
-                    yield x
+            # No citations in the response - don't show any sources
+            async for x in emit("sources", []):
+                yield x
 
         # --- Emit timing
         total_ms = int((time.perf_counter() - t0) * 1000)

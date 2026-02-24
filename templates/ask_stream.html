@@ -28,17 +28,18 @@
                 <button id="logout-btn" type="button">Logout</button>
             </div>
 
-            <h1>Farm Assistant (Streaming)</h1>
+            <div class="title-bar">
+                <h1>Farm Assistant (Streaming)</h1>
+                <select id="model" aria-label="Model">
+                    <option value="qwen3-30b-a3b-awq" selected>Qwen3 30B</option>
+                </select>
+            </div>
 
             <div class="chat-shell">
                 <div id="chat" class="chat" aria-live="polite" aria-busy="false"></div>
 
                 <form id="qform" class="bar composer">
-                    <input id="question" type="text" placeholder="Ask a question…" autocomplete="off" />
-
-                    <select id="model" aria-label="Model" class="hidden">
-                        <option value="qwen3-30b-a3b-awq" selected>Qwen3 30B A3B AWQ</option>
-                    </select>
+                    <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1"></textarea>
                     
                     <select id="voice-lang" aria-label="Voice Language" title="Speech Recognition Language">
                         <option value="en-GB" selected>🇬🇧 English</option>
@@ -139,6 +140,10 @@
 
                     const newPos = start + e.key.length;
                     input.setSelectionRange(newPos, newPos);
+
+                    // Trigger auto-resize
+                    input.style.height = 'auto';
+                    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
                 }
             });
         })();
