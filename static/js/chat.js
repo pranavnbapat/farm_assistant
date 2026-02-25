@@ -535,20 +535,22 @@ async function openSession(sessionUuid) {
             return;
         }
 
-        if (data.status !== 'success') {
+        // Be tolerant: some backends may omit `status` but still return `messages`.
+        if (data.status && data.status !== 'success') {
             console.warn('Failed to load session (status)', data);
             return;
         }
 
         const sessionObj = data.session || {};
+        const messages = Array.isArray(data.messages) ? data.messages : [];
         currentSessionTitle = (sessionObj.title || sessionTitleByUuid.get(sessionUuid) || '').trim();
-        currentSessionMessageCount = (data.messages || []).length;
+        currentSessionMessageCount = messages.length;
 
         const chatEl = document.getElementById('chat');
         if (!chatEl) return;
         chatEl.innerHTML = '';
 
-        (data.messages || []).forEach(m => {
+        messages.forEach(m => {
             const role = m.role === 'user' ? 'you' : 'assistant';
             const bubble = addMessage(role, m.content);
             if (role === 'assistant') {
@@ -557,6 +559,13 @@ async function openSession(sessionUuid) {
                 if (q) lastAssistantFollowupQuestion = q;
             }
         });
+
+        if (!messages.length) {
+            console.info('Session has no messages or backend returned empty list', {
+                session_uuid: sessionUuid,
+                payload_keys: Object.keys(data || {}),
+            });
+        }
     } catch (err) {
         console.error('Error loading session detail', err);
     }
@@ -624,8 +633,17 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
             return;
         }
 
-        // Backend may create a session if we passed null
-        if (!currentSessionUuid && data.session_uuid) {
+        // Backend is authoritative for session UUID.
+        // If backend returns a different UUID (e.g., it created/recovered another session),
+        // sync local state so sidebar/session-open use the correct conversation.
+        if (data.session_uuid && data.session_uuid !== currentSessionUuid) {
+            console.info('Switching to backend session_uuid returned by log-turn', {
+                previous_session_uuid: currentSessionUuid,
+                backend_session_uuid: data.session_uuid,
+            });
+            currentSessionUuid = data.session_uuid;
+            loadSessions().catch(console.error);
+        } else if (!currentSessionUuid && data.session_uuid) {
             currentSessionUuid = data.session_uuid;
             loadSessions().catch(console.error);
         }
@@ -1076,8 +1094,21 @@ function startStream(q) {
         cleanup();
     });
 
+    es.addEventListener('app_error', (e) => {
+        let msg = 'Request failed.';
+        try {
+            const obj = JSON.parse(e.data || '{}');
+            if (obj && obj.message) msg = obj.message;
+        } catch {}
+        setStatus(msg);
+        if (window.onAssistantStreamEnd) {
+            window.onAssistantStreamEnd();
+        }
+        cleanup();
+    });
+
     es.addEventListener('error', () => {
-        setStatus('Error or connection closed.');
+        setStatus('Connection interrupted. Please retry.');
         if (window.onAssistantStreamEnd) {
             window.onAssistantStreamEnd();
         }

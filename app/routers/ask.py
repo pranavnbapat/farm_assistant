@@ -278,16 +278,21 @@ async def ask_stream(
             data = json.dumps(data, ensure_ascii=False)
         yield {"event": event, "data": data}
 
+    async def emit_app_error(payload: dict):
+        # Use a custom event name to avoid collision with EventSource transport "error".
+        async for x in emit("app_error", payload):
+            yield x
+
     normalized_model = _normalize_model(model)
 
     async def gen():
         user_q = (q or "").strip()
         if not user_q:
-            async for x in emit("error", {"message": "Empty question"}):
+            async for x in emit_app_error({"message": "Empty question"}):
                 yield x
             return
         if _estimate_tokens(user_q) > S.MAX_USER_INPUT_TOKENS:
-            async for x in emit("error", {
+            async for x in emit_app_error({
                 "message": (
                     f"Question is too long. Limit is ~{S.MAX_USER_INPUT_TOKENS} tokens per message."
                 )
@@ -393,7 +398,7 @@ async def ask_stream(
                 items = await collect_os_items(client, search_payload, pages, headers, auth)
         except httpx.HTTPStatusError as e:
             body = (e.response.text or "")[:400]
-            async for x in emit("error", {"stage": "search", "status": e.response.status_code, "body": body}):
+            async for x in emit_app_error({"stage": "search", "status": e.response.status_code, "body": body}):
                 yield x
             return
 
@@ -499,7 +504,7 @@ async def ask_stream(
             max(256, int(S.NUM_CTX) - int(_max_tokens) - 256),
         )
         if prompt_tokens > prompt_cap:
-            async for x in emit("error", {
+            async for x in emit_app_error({
                 "message": (
                     f"Input context is too large (~{prompt_tokens} tokens). "
                     f"Please shorten your question or reduce attached content."
@@ -581,17 +586,17 @@ async def ask_stream(
                     
         except httpx.ConnectError as e:
             logger.error(f"Cannot connect to LLM backend: {e}")
-            async for x in emit("error", {"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
+            async for x in emit_app_error({"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
                 yield x
             return
         except httpx.HTTPStatusError as e:
             logger.error(f"LLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
-            async for x in emit("error", {"stage": "LLM", "status": e.response.status_code}):
+            async for x in emit_app_error({"stage": "LLM", "status": e.response.status_code}):
                 yield x
             return
         except Exception as e:
             logger.error(f"Unexpected LLM error: {e}")
-            async for x in emit("error", {"stage": "LLM", "message": f"Error: {str(e)}"}):
+            async for x in emit_app_error({"stage": "LLM", "message": f"Error: {str(e)}"}):
                 yield x
             return
         finally:
