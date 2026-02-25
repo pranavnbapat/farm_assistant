@@ -20,6 +20,14 @@ from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
 from app.services.chat_history import load_chat_state, format_history, save_chat_state, CHAT_BACKEND_URL
 from app.services.context_service import build_context_and_sources
+from app.services.pdf_service import (
+    get_docs_for_user,
+    build_pdf_contexts,
+    ensure_pdf_processed,
+    upsert_attachment_to_backend,
+    fetch_session_attachments_from_backend,
+    docs_from_attachment_records,
+)
 from app.services.prompt_service import build_prompt, build_summary_prompt, build_title_prompt
 from app.services.search_service import build_search_payload, collect_os_items
 from app.services.user_profile_service import UserProfileService
@@ -85,6 +93,116 @@ def _history_scope(history_text: str) -> str:
 SYSTEM_PROMPT_TAG = "farm-assistant-v2"
 
 
+def _estimate_tokens(text: str) -> int:
+    # Fast heuristic: ~4 chars per token for mixed English-like text.
+    return max(1, len(text or "") // 4)
+
+
+def _short_title_2_3_words(raw: str) -> str:
+    cleaned = (raw or "").strip().strip(" \"'")
+    if not cleaned:
+        return ""
+    words = [w for w in cleaned.split() if w]
+    if not words:
+        return ""
+    # Keep at most 3 words; if model returns 1 word, keep it as-is.
+    return " ".join(words[:3])[:120]
+
+
+def _is_short_affirmation(text: str) -> bool:
+    t = (text or "").strip().lower()
+    t = _re.sub(r"[^\w\s]", " ", t)
+    t = _re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return False
+    tokens = [w for w in _re.split(r"\s+", t) if w]
+    if len(tokens) > 4:
+        return False
+    canonical = {
+        "yes", "yea", "yeah", "yep", "yup",
+        "yes please", "please", "sure", "sure thing",
+        "okay", "ok", "alright", "all right",
+        "go ahead", "continue", "more", "tell me more", "sounds good",
+    }
+    return t in canonical
+
+
+def _extract_last_assistant_question(messages: list[dict]) -> str:
+    for msg in reversed(messages or []):
+        if (msg.get("role") or "").lower() != "assistant":
+            continue
+        content = (msg.get("content") or "").strip()
+        if not content or "?" not in content:
+            continue
+        # take last sentence-like chunk ending with '?'
+        parts = _re.split(r"(?<=[\?\!\.])\s+", content)
+        for p in reversed(parts):
+            p = p.strip()
+            if p.endswith("?"):
+                return p[:300]
+        return content[:300]
+    return ""
+
+
+def _is_file_handoff_query(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    canonical = {
+        "here you go",
+        "see this file",
+        "check this file",
+        "this file",
+        "look at this",
+        "use this file",
+        "read this",
+    }
+    return t in canonical
+
+
+def _mentions_file_or_document(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    keys = {"file", "document", "pdf", "attachment", "this doc", "this file"}
+    return any(k in t for k in keys)
+
+
+def _should_skip_query_normalization(text: str) -> bool:
+    # Avoid accidental translation for non-ASCII queries (e.g., Greek).
+    return any(ord(ch) > 127 for ch in (text or ""))
+
+
+async def _normalize_query_for_retrieval(text: str) -> str:
+    """
+    Best-effort query cleanup for spelling/grammar to improve retrieval.
+    Keeps meaning unchanged and falls back immediately on any error/timeout.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+
+    prompt = (
+        "Rewrite the user query with corrected spelling/grammar, preserving exact intent. "
+        "Keep it concise, one line, no explanation.\n\n"
+        f"Query: {raw}\n\n"
+        "Rewritten query:"
+    )
+    try:
+        rewritten = await asyncio.wait_for(
+            generate_once(prompt, temperature=0.0, max_tokens=48),
+            timeout=1.2,
+        )
+    except Exception:
+        return raw
+
+    line = (rewritten or "").strip().splitlines()
+    if not line:
+        return raw
+    cleaned = line[0].strip(" \"'")
+    return cleaned or raw
+
+
 async def _maybe_update_session_title(
     session_id: str,
     question: str,
@@ -109,7 +227,7 @@ async def _maybe_update_session_title(
         logger.warning(f"Title generation returned empty output for session {session_id[:8]}...")
         return
 
-    title = lines[0].strip(" \"'")[:120]
+    title = _short_title_2_3_words(lines[0])
     if not title:
         return
 
@@ -146,6 +264,8 @@ async def ask_stream(
     temperature: Optional[float] = None,
     model: Optional[str] = None,
     session_id: Optional[str] = None,
+    followup_hint: Optional[str] = None,
+    doc_ids: Optional[str] = None,
     request: Request = None,
 ):
     """
@@ -166,6 +286,15 @@ async def ask_stream(
             async for x in emit("error", {"message": "Empty question"}):
                 yield x
             return
+        if _estimate_tokens(user_q) > S.MAX_USER_INPUT_TOKENS:
+            async for x in emit("error", {
+                "message": (
+                    f"Question is too long. Limit is ~{S.MAX_USER_INPUT_TOKENS} tokens per message."
+                )
+            }):
+                yield x
+            return
+        requested_doc_ids = [d.strip() for d in (doc_ids or "").split(",") if d.strip()]
 
         t0 = time.perf_counter()
         
@@ -189,6 +318,27 @@ async def ask_stream(
         history_text = format_history(state.get("messages", []))
         initial_llm_ctx = state.get("llm_context")
         is_first_turn = not state.get("messages")
+        effective_q = user_q
+        prompt_q = user_q
+        if _is_short_affirmation(user_q):
+            prev_q = _extract_last_assistant_question(state.get("messages", []))
+            if not prev_q and followup_hint:
+                prev_q = (followup_hint or "").strip()[:300]
+            if prev_q:
+                effective_q = f"User confirmed previous assistant question. Continue from: {prev_q}"
+                prompt_q = f"{user_q}\n\nContinue based on this previous assistant question: {prev_q}"
+
+        retrieval_q = effective_q
+        if (
+            not retrieval_q.startswith("User confirmed previous assistant question. Continue from:")
+            and not _should_skip_query_normalization(retrieval_q)
+        ):
+            retrieval_q = await _normalize_query_for_retrieval(retrieval_q)
+        if requested_doc_ids and _is_file_handoff_query(user_q):
+            retrieval_q = (
+                "Summarize the uploaded PDF(s) with key points and practical takeaways, "
+                "then ask one focused follow-up question."
+            )
 
         # Load user profile
         profile_context = ""
@@ -223,7 +373,7 @@ async def ask_stream(
             yield x
 
         inp = AskIn(
-            question=user_q,
+            question=retrieval_q,
             page=page,
             k=k,
             top_k=top_k,
@@ -256,8 +406,67 @@ async def ask_stream(
         t_ctx_start = time.perf_counter()
         t_k = inp.top_k if inp.top_k is not None else S.TOP_K
         contexts, sources = build_context_and_sources(
-            items=items, question=user_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
+            items=items, question=retrieval_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
         )
+
+        # Merge uploaded PDF contexts (if provided)
+        if requested_doc_ids:
+            owner_scope = user_uuid or "anonymous"
+            pdf_docs = get_docs_for_user(requested_doc_ids, owner_scope)
+            if pdf_docs:
+                async for x in emit("status", {"stage": "PDF", "message": "Extracting uploaded PDF(s)..."}):
+                    yield x
+                for d in pdf_docs:
+                    await ensure_pdf_processed(d)
+                    if session_id and auth_token:
+                        asyncio.create_task(
+                            upsert_attachment_to_backend(
+                                chat_backend_url=CHAT_BACKEND_URL,
+                                verify_ssl=S.VERIFY_SSL,
+                                auth_token=auth_token,
+                                session_uuid=session_id,
+                                doc=d,
+                            )
+                        )
+                remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
+                pdf_contexts, pdf_sources = build_pdf_contexts(
+                    pdf_docs, question=retrieval_q, max_total_chars=remaining
+                )
+                contexts.extend(pdf_contexts)
+                # Add as source-like entries to include in citation mapping
+                for s in pdf_sources:
+                    sources.append(type("PdfSrc", (), {
+                        "sid": None,
+                        "id": s.get("id"),
+                        "title": s.get("title"),
+                        "display_url": None,
+                        "url": None,
+                        "license": None,
+                    })())
+        elif session_id and auth_token and _mentions_file_or_document(user_q):
+            # Fallback to persisted attachment summaries/text from Django for session continuity.
+            records = await fetch_session_attachments_from_backend(
+                chat_backend_url=CHAT_BACKEND_URL,
+                verify_ssl=S.VERIFY_SSL,
+                auth_token=auth_token,
+                session_uuid=session_id,
+            )
+            if records:
+                persisted_docs = docs_from_attachment_records(records, owner_id=(user_uuid or "persisted"))
+                remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
+                pdf_contexts, pdf_sources = build_pdf_contexts(
+                    persisted_docs, question=retrieval_q, max_total_chars=remaining
+                )
+                contexts.extend(pdf_contexts)
+                for s in pdf_sources:
+                    sources.append(type("PdfSrc", (), {
+                        "sid": None,
+                        "id": s.get("id"),
+                        "title": s.get("title"),
+                        "display_url": None,
+                        "url": None,
+                        "license": None,
+                    })())
         t_ctx_end = time.perf_counter()
 
         all_sources = [
@@ -273,15 +482,31 @@ async def ask_stream(
         ]
 
         # --- Build prompt with conversation history ---
-        _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_TOKENS
+        _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_OUTPUT_TOKENS
+        if _max_tokens <= 0 or _max_tokens > S.MAX_OUTPUT_TOKENS:
+            _max_tokens = S.MAX_OUTPUT_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
         prompt = build_prompt(
             contexts=contexts if contexts else [],
-            question=user_q,
+            question=prompt_q,
             history=history_text,
             user_profile_context=profile_context
         )
+        prompt_tokens = _estimate_tokens(prompt)
+        prompt_cap = min(
+            S.MAX_INPUT_TOKENS,
+            max(256, int(S.NUM_CTX) - int(_max_tokens) - 256),
+        )
+        if prompt_tokens > prompt_cap:
+            async for x in emit("error", {
+                "message": (
+                    f"Input context is too large (~{prompt_tokens} tokens). "
+                    f"Please shorten your question or reduce attached content."
+                )
+            }):
+                yield x
+            return
 
         # Cache key
         ctx_h = hash_contexts(contexts) if contexts else ""
@@ -289,7 +514,7 @@ async def ask_stream(
         history_scope = _history_scope(history_text)
 
         ckey = make_key(
-            user_q=user_q,
+            user_q=prompt_q,
             system_tag=SYSTEM_PROMPT_TAG,
             model_id=params["model"],
             params=params,
@@ -402,6 +627,8 @@ async def ask_stream(
         # Extract citations
         norm_text = _re.sub(r"\(\s*source[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\s*\)", r"[\1]", full_text, flags=_re.IGNORECASE)
         norm_text = _re.sub(r"\bsource[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\b", r"[\1]", norm_text, flags=_re.IGNORECASE)
+        norm_text = _re.sub(r"\[\s*[sS](\d+)\s*\]", r"[\1]", norm_text)
+        norm_text = _re.sub(r"\(\s*[sS](\d+)\s*\)", r"[\1]", norm_text)
 
         cited_nums = set()
         for m in _re.finditer(r"\[\s*(\d+)\s*\]", norm_text):

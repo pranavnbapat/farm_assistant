@@ -37,9 +37,12 @@
 
             <div class="chat-shell">
                 <div id="chat" class="chat" aria-live="polite" aria-busy="false"></div>
+                <div id="uploaded-files" class="uploaded-files hidden"></div>
 
                 <form id="qform" class="bar composer">
-                    <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1"></textarea>
+                    <input id="pdf-file" type="file" accept="application/pdf" class="hidden" />
+                    <button id="upload-pdf" type="button" title="Upload PDF">+</button>
+                    <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1" maxlength="4000"></textarea>
                     
                     <select id="voice-lang" aria-label="Voice Language" title="Speech Recognition Language">
                         <option value="en-GB" selected>🇬🇧 English</option>

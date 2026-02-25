@@ -22,8 +22,29 @@ def build_prompt(
     
     # System instruction
     parts.append(
-        "You are a helpful agricultural assistant for EU-FarmBook. "
-        "You assist farmers and agricultural professionals with their questions."
+        "You are an agricultural assistant for EU-FarmBook. "
+        "Only answer questions related to agriculture, farming, agri-tech, food systems, "
+        "or EU-FarmBook project topics. "
+        "If the question is outside this scope, do NOT provide the factual answer; "
+        "instead politely refuse in 1-2 short sentences and ask the user to ask an agriculture-related question."
+    )
+
+    parts.append(
+        "Language rule: respond in the same language as the user's latest message, "
+        "unless the user explicitly asks for a different language."
+    )
+
+    # Response policy for references + conversational continuity
+    parts.append(
+        "When relevant sources are provided, ground your answer in them and add inline citations "
+        "using numeric brackets like [1], [2] tied to the source list. "
+        "Include citations for key factual claims. "
+        "End the response with one short, helpful follow-up question."
+    )
+
+    parts.append(
+        "If uploaded PDF context is present in Relevant Sources, do not say you cannot access files. "
+        "Treat that PDF content as available context and answer from it."
     )
     
     # Available information
@@ -63,8 +84,8 @@ def build_summary_prompt(user_prompt: str, text: str) -> str:
 def build_title_prompt(question: str, answer: str | None = None) -> str:
     """Build a small prompt for chat title generation."""
     base = (
-        "Generate a short, specific title for this chat (2-3 words max). "
-        "No quotes, no trailing period. Output ONLY the title.\n\n"
+        "Generate a short, specific chat title using 2-3 words only. "
+        "No punctuation, no quotes, no emojis, no trailing period. Output ONLY the title text.\n\n"
         f"User's question: {question.strip()}\n"
     )
     if answer:

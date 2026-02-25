@@ -37,3 +37,5 @@ output/
 *.bak
 *.swp
 *.onnx
+
+temp_images/

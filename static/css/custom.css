@@ -265,7 +265,7 @@ select {
 /* Composer bar at the bottom, no sticky top */
 .bar {
     display: grid;
-    grid-template-columns: 1fr auto auto auto auto;
+    grid-template-columns: auto 1fr auto auto auto auto;
     gap: 8px;
     background: var(--panel);
     padding: 10px;
@@ -279,6 +279,60 @@ select {
 /* Just to differentiate the composer if you want */
 .bar.composer {
     margin-top: 4px;
+}
+
+#upload-pdf {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 10px;
+    font-size: 22px;
+    line-height: 1;
+    font-weight: 500;
+}
+
+.uploaded-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.file-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+    padding: 6px 10px;
+    border: 1px solid #223043;
+    border-radius: 999px;
+    background: #0f1520;
+    color: var(--text);
+    font-size: 12px;
+}
+
+.file-chip-name {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-chip-status {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.file-chip-remove {
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 50%;
+    padding: 0;
+    background: #1a2434;
+    color: var(--text);
+    line-height: 1;
+    font-size: 14px;
 }
 
 /* Audio row compact */

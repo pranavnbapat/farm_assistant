@@ -26,6 +26,9 @@ env/
 venv*/
 .python-version
 
+models/
+temp_images/
+
 # Env files
 .env
 .env.*

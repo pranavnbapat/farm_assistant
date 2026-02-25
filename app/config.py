@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     OLLAMA_URL: str = "http://ollama:11434"
     LLM_MODEL: str = "deepseek-llm:7b-chat-q5_K_M"
     
-    MAX_TOKENS: int = -1
+    MAX_TOKENS: int = 768
+    MAX_OUTPUT_TOKENS: int = 768
+    MAX_INPUT_TOKENS: int = 3000
+    MAX_USER_INPUT_TOKENS: int = 1200
     TEMPERATURE: float = 0.4
     NUM_CTX: int = 4096
     TOP_K: int = 5

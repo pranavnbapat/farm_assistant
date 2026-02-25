@@ -12,6 +12,8 @@ const FA_ENV = window.FA_ENV || 'local';
 // The FastAPI backend will forward these to the Django backend
 const SESSIONS_URL   = '/proxy/chat/sessions/';
 const LOG_TURN_URL   = '/proxy/chat/log-turn/';
+const PDF_UPLOAD_URL = '/files/pdf';
+const MAX_QUESTION_CHARS = 4000;
 
 // Current auth token and email from login page / login.js
 let authToken    = localStorage.getItem(LS_TOKEN);
@@ -165,6 +167,8 @@ if (appLayout) {
 let currentSessionUuid = null;
 let currentSessionTitle = '';
 let currentSessionMessageCount = 0;
+let activeDocIds = [];
+let lastSentAttachments = [];
 const UNTITLED_LABEL = '(untitled)';
 const sessionTitleByUuid = new Map();
 let floatingSessionMenu = null;
@@ -172,6 +176,27 @@ let floatingSessionMenuState = { sessionUuid: null, title: '' };
 let floatingSessionMenuHandlersBound = false;
 // Last user prompt (for logging)
 let lastUserQuestion = '';
+
+function shortTitleFromText(text) {
+    const cleaned = String(text || '')
+        .replace(/[^\w\s-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!cleaned) return 'New chat';
+
+    const stopWords = new Set([
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'to', 'for', 'of', 'in',
+        'on', 'at', 'and', 'or', 'with', 'how', 'what', 'which', 'can', 'could',
+        'would', 'should', 'do', 'does', 'did', 'please', 'tell', 'me', 'about',
+        'my', 'our', 'your'
+    ]);
+
+    const tokens = cleaned
+        .split(' ')
+        .filter(t => t && !stopWords.has(t.toLowerCase()));
+    const chosen = (tokens.length ? tokens : cleaned.split(' ')).slice(0, 3);
+    return chosen.join(' ').slice(0, 120);
+}
 
 // Shared helper: handle 401/400 auth failures from Django
 function handleAuthFailure(res, data, contextLabel) {
@@ -484,7 +509,7 @@ async function createNewSession(initialTitle = '') {
 async function ensureSessionExists(firstUserText) {
     if (currentSessionUuid) return currentSessionUuid;
     // Seed title from first user query so we are not dependent on PATCH support.
-    const seedTitle = (firstUserText || '').trim().slice(0, 120);
+    const seedTitle = shortTitleFromText(firstUserText);
     return await createNewSession(seedTitle);
 }
 
@@ -492,6 +517,8 @@ async function ensureSessionExists(firstUserText) {
 async function openSession(sessionUuid) {
     if (!authToken) return;
     currentSessionUuid = sessionUuid;
+    activeDocIds = [];
+    clearUploadedFileChips();
 
     try {
         const res = await fetch(`${SESSIONS_URL}${sessionUuid}/`, {
@@ -522,7 +549,13 @@ async function openSession(sessionUuid) {
         chatEl.innerHTML = '';
 
         (data.messages || []).forEach(m => {
-            addMessage(m.role === 'user' ? 'you' : 'assistant', m.content);
+            const role = m.role === 'user' ? 'you' : 'assistant';
+            const bubble = addMessage(role, m.content);
+            if (role === 'assistant') {
+                attachAssistantFooter(bubble, m.latency_ms, 'Completed.');
+                const q = extractLastQuestion(m.content || '');
+                if (q) lastAssistantFollowupQuestion = q;
+            }
         });
     } catch (err) {
         console.error('Error loading session detail', err);
@@ -539,6 +572,8 @@ if (newChatBtn) {
         currentSessionUuid = null;
         currentSessionTitle = '';
         currentSessionMessageCount = 0;
+        activeDocIds = [];
+        clearUploadedFileChips();
         const inputEl = document.getElementById('question');
         if (inputEl) inputEl.focus();
     });
@@ -570,6 +605,7 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
                 meta: {
                     model: selModel ? selModel.value : null,
                     latency_ms: latencyMs,
+                    attachments: lastSentAttachments,
                 },
             }),
         });
@@ -595,7 +631,7 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
         }
 
         if (!currentSessionTitle || currentSessionTitle === UNTITLED_LABEL) {
-            currentSessionTitle = (userText || '').trim().slice(0, 120);
+            currentSessionTitle = shortTitleFromText(userText);
         }
         currentSessionMessageCount += 2;
     } catch (err) {
@@ -610,7 +646,7 @@ async function maybeReseedUntitledEmptySession(firstUserText) {
     if (!isUntitled || currentSessionMessageCount > 0) return;
 
     const oldSessionUuid = currentSessionUuid;
-    const replacement = await createNewSession((firstUserText || '').trim().slice(0, 120));
+    const replacement = await createNewSession(shortTitleFromText(firstUserText));
     if (replacement) {
         console.info('Switched from empty untitled session', {
             old_session_uuid: oldSessionUuid,
@@ -629,6 +665,15 @@ const input = document.getElementById('question');
 const btnSend = document.getElementById('send');
 const btnStop = document.getElementById('stop');
 const selModel = document.getElementById('model');
+const uploadPdfBtn = document.getElementById('upload-pdf');
+const pdfFileInput = document.getElementById('pdf-file');
+const uploadedFilesEl = document.getElementById('uploaded-files');
+
+function clearUploadedFileChips() {
+    if (!uploadedFilesEl) return;
+    uploadedFilesEl.innerHTML = '';
+    uploadedFilesEl.classList.add('hidden');
+}
 
 // Auto-resize textarea
 function autoResizeTextarea() {
@@ -652,6 +697,36 @@ let clientStartTs = 0;
 let serverTimingMs = null;
 let statusLeft = null;
 let statusRight = null;
+let lastAssistantFollowupQuestion = '';
+
+function isShortAffirmation(text) {
+    const t = String(text || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!t) return false;
+    const tokens = t.split(/\s+/).filter(Boolean);
+    if (tokens.length > 4) return false;
+    const canonical = new Set([
+        'yes', 'yea', 'yeah', 'yep', 'yup',
+        'yes please', 'please', 'sure', 'sure thing',
+        'okay', 'ok', 'alright', 'all right',
+        'go ahead', 'continue', 'more', 'tell me more', 'sounds good',
+    ]);
+    return canonical.has(t);
+}
+
+function extractLastQuestion(text) {
+    const raw = String(text || '').trim();
+    if (!raw || !raw.includes('?')) return '';
+    const parts = raw.split(/(?<=[\?\!\.])\s+/).map(s => s.trim()).filter(Boolean);
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+        if (parts[i].endsWith('?')) return parts[i].slice(0, 300);
+    }
+    return '';
+}
 
 function formatDuration(ms) {
     if (ms == null || !isFinite(ms)) return '';
@@ -682,8 +757,35 @@ function scrollToBottom() {
     chat.scrollTop = chat.scrollHeight;
 }
 
+function getStatusPartsForBubble(bubble) {
+    if (!bubble || !bubble.parentElement) return { row: null, left: null, right: null };
+    const container = bubble.parentElement;
+    let row = container.querySelector('.status');
+
+    if (!row) {
+        row = document.createElement('div');
+        row.className = 'status';
+
+        const left = document.createElement('span');
+        left.className = 'left';
+
+        const right = document.createElement('span');
+        right.className = 'right';
+
+        row.appendChild(left);
+        row.appendChild(right);
+        container.appendChild(row);
+    }
+
+    return {
+        row,
+        left: row.querySelector('.left'),
+        right: row.querySelector('.right'),
+    };
+}
+
 // Add a small "speak" icon for a given assistant bubble.
-function attachSpeakButton(bubble) {
+function attachSpeakButton(bubble, leftContainer = null) {
     if (!bubble || !window.speechSynthesis) return;
 
     const container = bubble.parentElement; // .msg wrapper
@@ -724,7 +826,10 @@ function attachSpeakButton(bubble) {
         window.speechSynthesis.speak(utter);
     });
 
-    if (statusLeft) {
+    if (leftContainer) {
+        leftContainer.appendChild(document.createTextNode(' '));
+        leftContainer.appendChild(btn);
+    } else if (statusLeft) {
         statusLeft.appendChild(document.createTextNode(' '));
         statusLeft.appendChild(btn);
     } else if (statusNode) {
@@ -732,6 +837,20 @@ function attachSpeakButton(bubble) {
     } else {
         container.appendChild(btn);
     }
+}
+
+function attachAssistantFooter(bubble, latencyMs, stateText = 'Completed.') {
+    if (!bubble) return;
+    const { row, left, right } = getStatusPartsForBubble(bubble);
+    if (!row || !left || !right) return;
+
+    row.classList.remove('blink');
+    left.textContent = stateText;
+    right.textContent = (latencyMs != null && isFinite(latencyMs))
+        ? `Thought for ${formatDuration(latencyMs)}`
+        : '';
+
+    attachSpeakButton(bubble, left);
 }
 
 function addMessage(role, text) {
@@ -823,6 +942,16 @@ function renderCitationsToSuperscript(node) {
     node.innerHTML = html;
 }
 
+function getAttachedFileNames() {
+    if (!uploadedFilesEl) return [];
+    const names = [];
+    uploadedFilesEl.querySelectorAll('.file-chip-name').forEach((el) => {
+        const t = (el.textContent || '').trim();
+        if (t) names.push(t);
+    });
+    return names;
+}
+
 function startStream(q) {
     if (es) {
         es.close();
@@ -838,7 +967,16 @@ function startStream(q) {
     btnStop.classList.remove('hidden');
     chat.setAttribute('aria-busy', 'true');
 
-    addMessage('you', q);
+    const sendDocIds = [...activeDocIds];
+    const attachedNames = getAttachedFileNames();
+    lastSentAttachments = attachedNames.map((name, idx) => ({
+        doc_id: sendDocIds[idx] || null,
+        filename: name,
+    }));
+    const userDisplay = attachedNames.length
+        ? `${q}\n\nAttached PDF${attachedNames.length > 1 ? 's' : ''}: ${attachedNames.join(', ')}`
+        : q;
+    addMessage('you', userDisplay);
     answerNode = addMessage('assistant', '');
 
     if (window.onAssistantStreamStart) {
@@ -857,12 +995,22 @@ function startStream(q) {
     if (currentSessionUuid) {
         params.append('session_id', currentSessionUuid);
     }
+    if (sendDocIds.length) {
+        params.append('doc_ids', sendDocIds.join(','));
+    }
+    if (isShortAffirmation(q) && lastAssistantFollowupQuestion) {
+        params.append('followup_hint', lastAssistantFollowupQuestion);
+    }
 
     // Add auth token as query param since SSE doesn't support custom headers
     console.log('DEBUG: authToken exists?', !!authToken, 'token length:', authToken ? authToken.length : 0);
     if (authToken) {
         params.append('auth_token', 'Bearer ' + authToken);
     }
+
+    // Attachments are now bound to this sent user turn; clear pending list in composer.
+    activeDocIds = [];
+    clearUploadedFileChips();
     
     const url = `${chatBackendBase}/ask/stream?` + params.toString();
     console.log('DEBUG: SSE URL (without token):', url.replace(/auth_token=Bearer%20[^&]+/, 'auth_token=***'));
@@ -913,15 +1061,12 @@ function startStream(q) {
         renderCitationsToSuperscript(answerNode);
 
         const ms = (serverTimingMs != null ? serverTimingMs : (Date.now() - clientStartTs));
-        if (statusRight) statusRight.textContent = `Thought for ${formatDuration(ms)}`;
-
-        // Add a speak icon for this completed assistant answer
-        attachSpeakButton(answerNode);
-
-        insertThinkTime(answerNode, ms);
+        attachAssistantFooter(answerNode, ms, cancelled ? 'Stopped.' : 'Completed.');
         renderSourcesInline(answerNode, pendingSources);
 
         const assistantText = answerNode ? answerNode.textContent : '';
+        const followup = extractLastQuestion(assistantText);
+        if (followup) lastAssistantFollowupQuestion = followup;
         // Fire-and-forget log to backend
         logChatTurnToBackend(lastUserQuestion, assistantText, ms);
 
@@ -955,12 +1100,132 @@ function cleanup() {
     scrollToBottom();
 }
 
+async function uploadPdfFile(file) {
+    if (!file || !authToken) return;
+
+    const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const pendingChip = renderUploadedFileChip(tempId, file.name || 'document.pdf', 'Uploading...');
+
+    const form = new FormData();
+    form.append('file', file);
+
+    try {
+        const res = await fetch(PDF_UPLOAD_URL, {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + authToken,
+            },
+            body: form,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.status !== 'success') {
+            console.warn('PDF upload failed', res.status, data);
+            if (pendingChip) {
+                const st = pendingChip.querySelector('.file-chip-status');
+                if (st) st.textContent = 'Failed';
+            }
+            return;
+        }
+
+        if (data.doc_id && !activeDocIds.includes(data.doc_id)) {
+            activeDocIds.push(data.doc_id);
+        }
+
+        const filename = data.filename || file.name || 'document.pdf';
+        if (pendingChip) {
+            pendingChip.dataset.docId = data.doc_id || tempId;
+            const nm = pendingChip.querySelector('.file-chip-name');
+            const st = pendingChip.querySelector('.file-chip-status');
+            if (nm) nm.textContent = filename;
+            if (st) st.textContent = 'Uploaded';
+        } else {
+            renderUploadedFileChip(data.doc_id, filename, 'Uploaded');
+        }
+    } catch (err) {
+        console.error('Error uploading PDF', err);
+        if (pendingChip) {
+            const st = pendingChip.querySelector('.file-chip-status');
+            if (st) st.textContent = 'Failed';
+        }
+    }
+}
+
+async function deleteUploadedPdf(docId) {
+    if (!docId || !authToken) return;
+    try {
+        const res = await fetch(`/files/pdf/${docId}`, {
+            method: 'DELETE',
+            headers: {
+                'Authorization': 'Bearer ' + authToken,
+            },
+        });
+        if (!res.ok) {
+            console.warn('Failed to delete uploaded PDF', res.status);
+        }
+    } catch (err) {
+        console.error('Error deleting uploaded PDF', err);
+    }
+}
+
+function renderUploadedFileChip(docId, filename, statusText) {
+    if (!uploadedFilesEl || !docId) return;
+    const existing = uploadedFilesEl.querySelector(`[data-doc-id="${docId}"]`);
+    if (existing) return existing;
+
+    uploadedFilesEl.classList.remove('hidden');
+
+    const chip = document.createElement('div');
+    chip.className = 'file-chip';
+    chip.dataset.docId = docId;
+
+    const name = document.createElement('span');
+    name.className = 'file-chip-name';
+    name.textContent = filename || 'document.pdf';
+
+    const st = document.createElement('span');
+    st.className = 'file-chip-status';
+    st.textContent = statusText || 'Uploaded';
+
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'file-chip-remove';
+    rm.title = 'Remove file';
+    rm.textContent = '×';
+    rm.addEventListener('click', async () => {
+        activeDocIds = activeDocIds.filter(x => x !== docId);
+        chip.remove();
+        if (!uploadedFilesEl.children.length) uploadedFilesEl.classList.add('hidden');
+        await deleteUploadedPdf(docId);
+    });
+
+    chip.appendChild(name);
+    chip.appendChild(st);
+    chip.appendChild(rm);
+    uploadedFilesEl.appendChild(chip);
+    return chip;
+}
+
+if (uploadPdfBtn && pdfFileInput) {
+    uploadPdfBtn.addEventListener('click', () => {
+        pdfFileInput.click();
+    });
+    pdfFileInput.addEventListener('change', async () => {
+        const f = (pdfFileInput.files && pdfFileInput.files[0]) || null;
+        if (f) await uploadPdfFile(f);
+        pdfFileInput.value = '';
+    });
+}
+
 // Submit handler: ensure session exists, then stream
 if (form) {
     form.addEventListener('submit', async (ev) => {
         ev.preventDefault();
         const q = input.value.trim();
         if (!q) return;
+        if (q.length > MAX_QUESTION_CHARS) {
+            window.alert(`Question is too long. Maximum ${MAX_QUESTION_CHARS} characters.`);
+            return;
+        }
 
         lastUserQuestion = q;
 

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.routers.ask import router as ask_router
+from app.routers.files import router as files_router
 from app.routers.tts import router as tts_router
 
 S = get_settings()
@@ -120,6 +121,7 @@ async def health():
 # Mount feature routers
 app.include_router(ask_router)
 app.include_router(tts_router)
+app.include_router(files_router)
 
 @app.get("/", response_class=HTMLResponse)
 def login_page():
