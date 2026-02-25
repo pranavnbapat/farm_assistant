@@ -150,14 +150,95 @@ select {
 .session-item {
     padding: 6px 8px;
     border-radius: 8px;
-    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 14px;
     color: var(--muted);
+    position: relative;
+    overflow: visible;
 }
 
 .session-item:hover {
     background: #151d29;
     color: var(--text);
+}
+
+.session-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.session-actions {
+    margin-left: auto;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.session-menu-trigger {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 7px;
+    border: 1px solid #223043;
+    background: transparent;
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 1;
+}
+
+.session-menu-trigger:hover {
+    background: #1a2434;
+    color: var(--text);
+}
+
+.session-menu {
+    position: absolute;
+    right: 0;
+    top: 30px;
+    min-width: 120px;
+    padding: 6px;
+    border: 1px solid #223043;
+    border-radius: 10px;
+    background: #0f1520;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+    z-index: 1000;
+}
+
+.session-menu.dropup {
+    top: auto;
+    bottom: 30px;
+}
+
+.session-menu-portal {
+    position: fixed;
+    right: auto;
+    top: auto;
+    z-index: 9999;
+}
+
+.session-menu-item {
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+}
+
+.session-menu-item:hover {
+    background: #1a2434;
+}
+
+.session-menu-item.danger {
+    color: #ff8e8e;
 }
 
 /* Container that holds chat messages + composer + audio */

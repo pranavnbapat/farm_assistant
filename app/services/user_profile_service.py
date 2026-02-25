@@ -10,13 +10,14 @@ This service builds and maintains user profiles by:
 
 import logging
 import re
-from typing import Dict, List, Optional, Any
+
 from dataclasses import dataclass
-from datetime import datetime
+from typing import Dict, List, Optional, Any
 
 import httpx
 
 from app.config import get_settings
+
 
 S = get_settings()
 logger = logging.getLogger("farm-assistant.profile")
@@ -296,18 +297,20 @@ class UserProfileService:
         # Extract specific facts
         facts = cls._extract_facts(message)
         extracted['facts'] = facts
-        
-        # Try to detect region (basic - looks for country names or "in [Location]")
+
+        # Try to detect region (basic): "in X", "from X", "located in X"
+        # NOTE: this is best-effort and should be replaced with NER/geocoding later.
         region_patterns = [
-            r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b',
-            r'\bfrom\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b',
+            r'\b(?:in|from|located in)\s+([a-z][a-z\s\-]{1,50})\b',
         ]
         for pattern in region_patterns:
-            match = re.search(pattern, message)
+            match = re.search(pattern, message_lower, re.IGNORECASE)
             if match:
-                potential_region = match.group(1)
-                if potential_region.lower() not in ['the', 'my', 'our', 'this', 'that']:
-                    extracted['region'] = potential_region
+                potential_region = match.group(1).strip(" ,.")
+                # Avoid obvious non-locations / determiners
+                if potential_region not in {'the', 'my', 'our', 'this', 'that'}:
+                    # Title-case for nicer display; keep original if you prefer
+                    extracted['region'] = potential_region.title()
                     break
         
         return extracted
@@ -317,23 +320,27 @@ class UserProfileService:
         """Extract specific facts from message."""
         facts = []
         message_lower = message.lower()
-        
-        # Issue patterns
+
+        # Issue patterns (keep simple, but avoid false positives)
         issue_patterns = [
-            r'(?:have|has|having|facing|dealing with)\s+(?:a\s+)?(problem|issue|trouble)\s+(?:with\s+)?(.+?)(?:\.|,|and|but|$)',
-            r'(.+?)\s+(?:is|are)\s+(?:not\s+)?working',
+            # "problem/issue/trouble with X"
+            r'(?:have|has|having|facing|dealing with)\s+(?:a\s+)?(?:problem|issue|trouble)\s+(?:with\s+)?(.+?)(?:\.|,| and | but |$)',
+            # "X is not working" / "X isn't working" / "X stopped working"
+            r'(.+?)\s+(?:is|are)\s+(?:not\s+working|n\'t\s+working)',
+            r'(.+?)\s+stopped\s+working',
+            # "struggling with X"
             r'struggling\s+(?:with\s+)?(.+?)(?:\.|,|$)',
+            # "pest/disease on X"
             r'(?:aphid|pest|disease|fungus|weed)\s+(?:on|in)\s+(.+?)(?:\.|,|$)',
         ]
-        
+
         for pattern in issue_patterns:
-            matches = re.finditer(pattern, message_lower, re.IGNORECASE)
-            for match in matches:
-                issue_text = match.group(1) if len(match.groups()) == 1 else match.group(2)
-                if issue_text and len(issue_text) > 3:
+            for match in re.finditer(pattern, message_lower, re.IGNORECASE):
+                issue_text = match.group(1).strip(" ,.")
+                if len(issue_text) > 3:
                     facts.append(UserFact(
                         category='issue',
-                        text=f"User mentioned issue with: {issue_text.strip()}",
+                        text=f"User mentioned issue with: {issue_text}",
                         confidence=0.8
                     ))
         
@@ -381,17 +388,17 @@ class UserProfileService:
         
         # Location-based facts
         location_patterns = [
-            r'(?:in|from|located in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b',
-            r'(?:farm|land|property)\s+(?:in|at|near)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)',
+            r'\b(?:in|from|located in)\s+([a-z][a-z\s\-]{1,50})\b',
+            r'\b(?:farm|land|property)\s+(?:in|at|near)\s+([a-z][a-z\s\-]{1,50})\b',
         ]
         for pattern in location_patterns:
-            match = re.search(pattern, message, re.IGNORECASE)
+            match = re.search(pattern, message_lower, re.IGNORECASE)
             if match:
-                location = match.group(1).strip()
-                if len(location) > 2 and location.lower() not in ['the', 'my', 'our', 'this']:
+                location = match.group(1).strip(" ,.")
+                if location and location not in {'the', 'my', 'our', 'this'}:
                     facts.append(UserFact(
                         category='location',
-                        text=f"User farms in/location: {location}",
+                        text=f"User farms in/location: {location.title()}",
                         confidence=0.75
                     ))
         
@@ -412,7 +419,7 @@ class UserProfileService:
         
         logger.debug(f"Extracted {len(facts)} facts from message")
         return facts
-    
+
     @classmethod
     async def process_conversation_turn(
         cls,
@@ -424,7 +431,7 @@ class UserProfileService:
     ) -> None:
         """
         Process a conversation turn to update user profile.
-        This should be called after each Q&A exchange.
+        Only processes substantive messages (skips greetings, meta-instructions, etc.)
         """
         if not auth_token:
             logger.warning("No auth token provided for profile update")
@@ -529,46 +536,6 @@ class UserProfileService:
             return "User Profile:\n" + "\n".join(f"- {part}" for part in context_parts)
         
         return ""
-# ... (keep all existing code)
-
-    @classmethod
-    def build_profile_context(cls, profile: UserProfile, facts: List[Dict] = None) -> str:
-        """
-        Build a context string from user profile to include in prompts.
-        This provides personalization without sending full chat history.
-        """
-        context_parts = []
-        
-        # Basic profile info
-        if profile.expertise_level:
-            context_parts.append(f"User expertise level: {profile.expertise_level}")
-        
-        if profile.farm_type:
-            context_parts.append(f"Farm type: {profile.farm_type}")
-        
-        if profile.region:
-            context_parts.append(f"Region: {profile.region}")
-        
-        if profile.crops:
-            crops_str = ', '.join(profile.crops[:5])  # Limit to 5
-            context_parts.append(f"Crops/livestock: {crops_str}")
-        
-        # Communication preference
-        if profile.communication_style == 'concise':
-            context_parts.append("User prefers concise answers")
-        elif profile.communication_style == 'technical':
-            context_parts.append("User prefers technical, detailed information")
-        
-        # Recent facts
-        if facts:
-            important_facts = [f for f in facts if f.get('confidence', 0) > 0.7][:3]
-            for fact in important_facts:
-                context_parts.append(f"Note: {fact['text']}")
-        
-        if context_parts:
-            return "User Profile:\n" + "\n".join(f"- {part}" for part in context_parts)
-        
-        return ""
 
     # -------------------------------------------------------------------------
     # ADVANCED: LLM-based extraction (optional, for future enhancement)
@@ -620,20 +587,41 @@ Rules:
             # Parse JSON response
             import json
             # Find JSON block in response
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            # Find the first JSON object block in response (non-greedy)
+            json_match = re.search(r'\{.*?\}', response, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
+
+                # Basic sanity checks to reduce downstream surprises
+                if not isinstance(data, dict):
+                    raise ValueError("LLM response JSON is not an object")
+
+                crops = data.get('crops', [])
+                topics = data.get('topics', [])
+                facts_raw = data.get('facts', [])
+
+                if crops is None:
+                    crops = []
+                if topics is None:
+                    topics = []
+                if facts_raw is None:
+                    facts_raw = []
+
                 return {
                     'expertise_level': data.get('expertise_level'),
                     'farm_type': data.get('farm_type'),
                     'region': data.get('region'),
-                    'crops': data.get('crops', []),
-                    'topics': data.get('topics', []),
-                    'facts': [UserFact(
-                        category=f.get('category', 'preference'),
-                        text=f.get('text', ''),
-                        confidence=f.get('confidence', 0.7)
-                    ) for f in data.get('facts', [])]
+                    'crops': crops if isinstance(crops, list) else [],
+                    'topics': topics if isinstance(topics, list) else [],
+                    'facts': [
+                        UserFact(
+                            category=f.get('category', 'preference'),
+                            text=f.get('text', ''),
+                            confidence=f.get('confidence', 0.7)
+                        )
+                        for f in (facts_raw if isinstance(facts_raw, list) else [])
+                        if isinstance(f, dict)
+                    ]
                 }
         except Exception as e:
             logger.warning(f"LLM extraction failed, falling back to keywords: {e}")

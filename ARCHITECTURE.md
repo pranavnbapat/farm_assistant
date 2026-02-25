@@ -167,21 +167,21 @@ for paragraph in document:
 
 #### Prompt Service (`app/services/prompt_service.py`)
 
-Manages prompt templates:
-- **RAG Prompt**: Includes sources, citation instructions, domain restriction, language rules
-- **Generic Prompt**: For LLM-only queries without retrieval
+Simple, natural prompt building:
+- **Main Prompt**: Natural conversation format with sources, history, and profile
 - **Summary Prompt**: For text summarization tasks
 - **Title Prompt**: For automatic session title generation
 
 Key features:
-- **Domain restriction**: Strictly limits responses to agriculture topics
-- **Language rules**: Instructs model to respond in user's question language
-- **Personalization**: Tailors responses based on user profile
+- **Natural conversation**: Full conversation history provided to LLM
+- **No hardcoded rules**: LLM handles context, language, and relevance naturally
+- **Personalization**: User profile included when available
 
 #### User Profile Service (`app/services/user_profile_service.py`)
 
 Manages user personalization:
-- **Profile extraction**: Keyword-based extraction of user attributes
+- **Smart extraction**: Only processes substantive messages (skips greetings, meta-instructions)
+- **Profile extraction**: Extracts user attributes from meaningful conversations
 - **Fact storage**: Stores user facts in Django backend
 - **Profile context building**: Creates context string for prompts
 
@@ -192,9 +192,11 @@ Extracted attributes:
 - Communication preferences
 - Topics of interest
 
-Extraction methods:
-1. **Keyword-based** (current): Fast, reliable pattern matching
-2. **LLM-based** (optional): More accurate but slower/expensive
+Skipped messages (not profiled):
+- Greetings ("Hi", "How are you?")
+- Meta-instructions ("Answer in English")
+- Short acknowledgments ("OK", "Thanks")
+- Personal questions ("Who created you?")
 
 #### Chat History Service (`app/services/chat_history.py`)
 
@@ -246,10 +248,12 @@ Simple HTTP client for OpenSearch:
 
 Main chat endpoint implementing:
 
-**Domain Validation**:
+**Request Processing**:
 ```python
-is_agri, reason = is_agriculture_related(user_q)
-# Logs for analytics but lets LLM handle the response
+# Natural conversation flow - no hardcoded logic
+# 1. Always search (LLM decides if results are useful)
+# 2. Send full conversation history to LLM
+# 3. LLM naturally handles context and continuity
 ```
 
 **User Extraction**:
@@ -258,13 +262,13 @@ user_uuid = _extract_user_uuid_from_token(auth_token)
 # Extracts UUID from JWT for profile loading
 ```
 
-**Intent Routing**:
+**Natural Conversation Flow**:
 ```python
-intent = classify_intent(query)
-if intent == "LLM_ONLY":
-    # Direct LLM without search
-else:
-    # Full RAG pipeline
+# No separate intent classification
+# No hardcoded "ambiguous response" detection
+# Full history + search results → LLM handles naturally
+prompt = build_prompt(contexts, question, history, profile)
+response = await stream_generate(prompt)
 ```
 
 **Caching**:

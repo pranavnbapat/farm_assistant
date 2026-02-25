@@ -54,6 +54,27 @@ logger.info(f"FA_ENV={S.FA_ENV}, Using auth backend: {LOGIN_URL}")
 
 ENABLE_DOCS: bool = True
 
+
+def _relay_upstream_response(upstream: httpx.Response) -> JSONResponse:
+    """
+    Return upstream response with original status code and best-effort JSON body.
+    Avoid masking upstream 4xx/5xx as generic 502 so frontend can show real errors.
+    """
+    try:
+        body = upstream.json()
+    except ValueError:
+        body = {
+            "status": "error",
+            "message": "Upstream returned non-JSON response",
+            "upstream_status": upstream.status_code,
+            "upstream_body": (upstream.text or "")[:1000],
+        }
+
+    if upstream.is_error:
+        logger.warning(f"Upstream proxy error: HTTP {upstream.status_code}, body={str(body)[:300]}")
+
+    return JSONResponse(content=body, status_code=upstream.status_code)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     limit = int(os.getenv("MAX_ACTIVE_GENERATIONS", "3"))
@@ -199,8 +220,7 @@ async def proxy_get_sessions(request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
             upstream = await client.get(url, headers=headers)
-            upstream.raise_for_status()
-            return upstream.json()
+            return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
         logger.error(f"Failed to proxy sessions: {e}")
         raise HTTPException(status_code=502, detail=str(e))
@@ -222,8 +242,7 @@ async def proxy_create_session(request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
             upstream = await client.post(url, json=body, headers=headers)
-            upstream.raise_for_status()
-            return upstream.json()
+            return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
         logger.error(f"Failed to proxy create session: {e}")
         raise HTTPException(status_code=502, detail=str(e))
@@ -244,10 +263,31 @@ async def proxy_get_session(session_id: str, request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
             upstream = await client.get(url, headers=headers)
-            upstream.raise_for_status()
-            return upstream.json()
+            return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
         logger.error(f"Failed to proxy get session: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.patch("/proxy/chat/sessions/{session_id}/")
+async def proxy_patch_session(session_id: str, request: Request):
+    """Proxy PATCH session request to Django backend (e.g., rename title)."""
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+
+    url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
+    headers = {
+        "Authorization": request.headers.get("Authorization", ""),
+        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
+    }
+    body = await request.json()
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
+            upstream = await client.patch(url, json=body, headers=headers)
+            return _relay_upstream_response(upstream)
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to proxy patch session: {e}")
         raise HTTPException(status_code=502, detail=str(e))
 
 
@@ -266,8 +306,7 @@ async def proxy_delete_session(session_id: str, request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
             upstream = await client.delete(url, headers=headers)
-            upstream.raise_for_status()
-            return upstream.json()
+            return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
         logger.error(f"Failed to proxy delete session: {e}")
         raise HTTPException(status_code=502, detail=str(e))
@@ -291,8 +330,7 @@ async def proxy_log_turn(request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
             upstream = await client.post(url, json=body, headers=headers)
-            upstream.raise_for_status()
-            return upstream.json()
+            return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
         logger.error(f"Failed to proxy log turn: {e}")
         raise HTTPException(status_code=502, detail=str(e))
@@ -310,8 +348,7 @@ async def proxy_logout(request: Request):
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
             upstream = await client.post(url, json=body)
-            upstream.raise_for_status()
-            return upstream.json()
+            return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
         logger.error(f"Failed to proxy logout: {e}")
         raise HTTPException(status_code=502, detail=str(e))

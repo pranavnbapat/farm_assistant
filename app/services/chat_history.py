@@ -3,34 +3,15 @@
 import httpx
 import logging
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import Optional
 
 from app.config import get_settings
+
 
 S = get_settings()
 logger = logging.getLogger("farm-assistant.chat_history")
 
 CHAT_BACKEND_URL = (S.CHAT_BACKEND_URL or "").rstrip("/")
-
-# One user–assistant exchange
-@dataclass
-class ChatTurn:
-    user: str
-    assistant: str
-
-@dataclass
-class ChatState:
-    turns: List[ChatTurn] = field(default_factory=list)
-    llm_context: Optional[list[int]] = None  # Legacy: Ollama KV cache (not used with vLLM)
-
-# Very simple in-memory store – fine for now.
-# For prod you can replace this with Redis or your Django DB.
-_STORE: Dict[str, ChatState] = {}
-
-# Keep only the last N turns to avoid gigantic prompts
-_MAX_TURNS = 10
-
 
 async def load_chat_state(session_id: Optional[str], auth_token: Optional[str] = None) -> dict:
     """Load chat history from Django backend."""

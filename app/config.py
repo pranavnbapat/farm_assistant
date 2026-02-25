@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     GARBAGE_OK_MAX: float = Field(0.10, description="Treat as clean if garbage_score below this")
     CONF_STRONG: float = Field(0.80, description="Treat as confident if above this")
 
+    # --- User Profile Settings ---
+    PROFILE_LLM_EXTRACTION: bool = Field(True, description="Use LLM for multilingual profile extraction")
+    PROFILE_KEYWORD_FALLBACK: bool = Field(True, description="Fallback to keyword extraction if LLM fails")
+    PROFILE_DEDUPLICATION_ENABLED: bool = Field(True, description="Enable semantic deduplication of facts")
+    PROFILE_MAX_FACTS_PER_CATEGORY: int = Field(20, description="Max facts to store per category")
+    PROFILE_SIMILARITY_THRESHOLD: float = Field(0.85, description="Jaccard similarity threshold for deduplication")
+
     # pydantic v2 config
     model_config = SettingsConfigDict(
         env_file=".env",

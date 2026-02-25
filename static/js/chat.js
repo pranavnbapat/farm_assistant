@@ -163,6 +163,13 @@ if (appLayout) {
 
 // Current ChatSession.session_uuid (string or null)
 let currentSessionUuid = null;
+let currentSessionTitle = '';
+let currentSessionMessageCount = 0;
+const UNTITLED_LABEL = '(untitled)';
+const sessionTitleByUuid = new Map();
+let floatingSessionMenu = null;
+let floatingSessionMenuState = { sessionUuid: null, title: '' };
+let floatingSessionMenuHandlersBound = false;
 // Last user prompt (for logging)
 let lastUserQuestion = '';
 
@@ -212,69 +219,223 @@ async function loadSessions() {
     }
 }
 
+async function renameSession(sessionUuid, currentTitle = '') {
+    if (!authToken || !sessionUuid) return false;
+
+    const seed = (currentTitle || '').trim();
+    const nextTitleRaw = window.prompt('Rename chat title:', seed);
+    if (nextTitleRaw == null) return false; // user cancelled
+
+    const nextTitle = nextTitleRaw.trim().slice(0, 120);
+    if (!nextTitle) {
+        window.alert('Title cannot be empty.');
+        return false;
+    }
+
+    try {
+        const res = await fetch(`${SESSIONS_URL}${sessionUuid}/`, {
+            method: 'PATCH',
+            headers: backendHeaders(),
+            body: JSON.stringify({ title: nextTitle }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        maybeUpdateTokenFromResponse(data);
+
+        if (!res.ok) {
+            if (handleAuthFailure(res, data, 'renameSession')) return false;
+            console.warn('Failed to rename session (HTTP)', res.status, data);
+            window.alert((data && data.message) ? data.message : `Rename failed (HTTP ${res.status})`);
+            return false;
+        }
+
+        if (data.status && data.status !== 'success') {
+            console.warn('Failed to rename session (status)', data);
+            window.alert(data.message || 'Rename failed.');
+            return false;
+        }
+
+        sessionTitleByUuid.set(sessionUuid, nextTitle);
+        if (currentSessionUuid === sessionUuid) currentSessionTitle = nextTitle;
+        loadSessions().catch(console.error);
+        return true;
+    } catch (err) {
+        console.error('Error renaming session', err);
+        window.alert('Rename request failed.');
+        return false;
+    }
+}
+
+async function deleteSession(sessionUuid) {
+    if (!authToken || !sessionUuid) return false;
+
+    try {
+        const res = await fetch(`${SESSIONS_URL}${sessionUuid}/`, {
+            method: 'DELETE',
+            headers: backendHeaders(),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        maybeUpdateTokenFromResponse(data);
+
+        if (!res.ok) {
+            if (handleAuthFailure(res, data, 'deleteSession')) return false;
+            console.warn('Failed to delete session (HTTP)', res.status, data);
+            return false;
+        }
+
+        if (data.status !== 'success') {
+            console.warn('Failed to delete session (status)', data);
+            return false;
+        }
+
+        if (currentSessionUuid === sessionUuid) {
+            currentSessionUuid = null;
+            currentSessionTitle = '';
+            currentSessionMessageCount = 0;
+            const chatEl = document.getElementById('chat');
+            if (chatEl) chatEl.innerHTML = '';
+        }
+
+        loadSessions().catch(console.error);
+        return true;
+    } catch (err) {
+        console.error('Error deleting session', err);
+        return false;
+    }
+}
+
+function closeSessionActionMenu() {
+    if (!floatingSessionMenu) return;
+    floatingSessionMenu.classList.add('hidden');
+    floatingSessionMenuState = { sessionUuid: null, title: '' };
+}
+
+function ensureFloatingSessionMenu() {
+    if (floatingSessionMenu) return floatingSessionMenu;
+
+    const menu = document.createElement('div');
+    menu.className = 'session-menu session-menu-portal hidden';
+
+    const renameItem = document.createElement('button');
+    renameItem.type = 'button';
+    renameItem.className = 'session-menu-item';
+    renameItem.textContent = 'Rename';
+    renameItem.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const { sessionUuid, title } = floatingSessionMenuState;
+        closeSessionActionMenu();
+        if (!sessionUuid) return;
+        await renameSession(sessionUuid, title);
+    });
+
+    const deleteItem = document.createElement('button');
+    deleteItem.type = 'button';
+    deleteItem.className = 'session-menu-item danger';
+    deleteItem.textContent = 'Delete';
+    deleteItem.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const { sessionUuid } = floatingSessionMenuState;
+        closeSessionActionMenu();
+        if (!sessionUuid) return;
+        const ok = window.confirm('Delete this chat?');
+        if (!ok) return;
+        await deleteSession(sessionUuid);
+    });
+
+    menu.appendChild(renameItem);
+    menu.appendChild(deleteItem);
+    menu.addEventListener('click', (e) => e.stopPropagation());
+
+    document.body.appendChild(menu);
+    floatingSessionMenu = menu;
+
+    if (!floatingSessionMenuHandlersBound) {
+        document.addEventListener('click', () => closeSessionActionMenu());
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeSessionActionMenu();
+        });
+        window.addEventListener('resize', () => closeSessionActionMenu());
+        window.addEventListener('scroll', () => closeSessionActionMenu(), true);
+        floatingSessionMenuHandlersBound = true;
+    }
+
+    return menu;
+}
+
+function openSessionActionMenu(triggerBtn, sessionUuid, title) {
+    const menu = ensureFloatingSessionMenu();
+    const isOpeningSame =
+        !menu.classList.contains('hidden') && floatingSessionMenuState.sessionUuid === sessionUuid;
+    if (isOpeningSame) {
+        closeSessionActionMenu();
+        return;
+    }
+
+    floatingSessionMenuState = { sessionUuid, title };
+    menu.classList.remove('hidden');
+
+    const btnRect = triggerBtn.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const gap = 6;
+
+    let left = btnRect.right - menuRect.width;
+    if (left < 8) left = 8;
+    if (left + menuRect.width > window.innerWidth - 8) {
+        left = window.innerWidth - menuRect.width - 8;
+    }
+
+    let top = btnRect.bottom + gap;
+    if (top + menuRect.height > window.innerHeight - 8) {
+        top = btnRect.top - menuRect.height - gap;
+    }
+    if (top < 8) top = 8;
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
 function renderSessionList(sessions) {
     const listEl = document.getElementById('session-list');
     if (!listEl) return;
     listEl.innerHTML = '';
+    sessionTitleByUuid.clear();
+    ensureFloatingSessionMenu();
 
     sessions.forEach(sess => {
+        const safeTitle = (sess.title || UNTITLED_LABEL);
+        sessionTitleByUuid.set(sess.session_uuid, safeTitle);
+
         const li = document.createElement('li');
         li.className = 'session-item';
         li.dataset.uuid = sess.session_uuid;
 
         // Text span so we can add a delete button next to it
         const titleSpan = document.createElement('span');
-        titleSpan.textContent = sess.title || '(untitled)';
-        titleSpan.addEventListener('click', () => openSession(sess.session_uuid));
-
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.textContent = '🗑';
-        delBtn.title = 'Delete this chat';
-        delBtn.className = 'session-delete-btn';
-        delBtn.style.marginLeft = '8px';
-
-        delBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();  // don’t trigger openSession
-            const ok = window.confirm('Delete this chat?');
-            if (!ok) return;
-
-            try {
-                const res = await fetch(`${SESSIONS_URL}${sess.session_uuid}/`, {
-                    method: 'DELETE',
-                    headers: backendHeaders(),
-                });
-
-                const data = await res.json().catch(() => ({}));
-                maybeUpdateTokenFromResponse(data);
-
-                if (!res.ok) {
-                    if (handleAuthFailure(res, data, 'deleteSession')) return;
-                    console.warn('Failed to delete session (HTTP)', res.status, data);
-                    return;
-                }
-
-                if (data.status !== 'success') {
-                    console.warn('Failed to delete session (status)', data);
-                    return;
-                }
-
-                // If we were viewing this session, clear it
-                if (currentSessionUuid === sess.session_uuid) {
-                    currentSessionUuid = null;
-                    const chatEl = document.getElementById('chat');
-                    if (chatEl) chatEl.innerHTML = '';
-                }
-
-                // Reload the list
-                loadSessions().catch(console.error);
-            } catch (err) {
-                console.error('Error deleting session', err);
-            }
+        titleSpan.className = 'session-title';
+        titleSpan.textContent = safeTitle;
+        titleSpan.addEventListener('click', () => {
+            closeSessionActionMenu();
+            openSession(sess.session_uuid);
         });
 
+        const actionsWrap = document.createElement('div');
+        actionsWrap.className = 'session-actions';
+
+        const menuBtn = document.createElement('button');
+        menuBtn.type = 'button';
+        menuBtn.className = 'session-menu-trigger';
+        menuBtn.title = 'Chat options';
+        menuBtn.textContent = '⋯';
+
+        menuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openSessionActionMenu(menuBtn, sess.session_uuid, safeTitle);
+        });
+        actionsWrap.appendChild(menuBtn);
+
         li.appendChild(titleSpan);
-        li.appendChild(delBtn);
+        li.appendChild(actionsWrap);
         listEl.appendChild(li);
     });
 }
@@ -308,6 +469,8 @@ async function createNewSession(initialTitle = '') {
         }
 
         currentSessionUuid = data.session_uuid;
+        currentSessionTitle = (data.title || initialTitle || '').trim();
+        currentSessionMessageCount = 0;
         // Reload list so the new chat appears at the top
         loadSessions().catch(console.error);
         return currentSessionUuid;
@@ -320,7 +483,9 @@ async function createNewSession(initialTitle = '') {
 // Ensure a session exists before logging the first turn
 async function ensureSessionExists(firstUserText) {
     if (currentSessionUuid) return currentSessionUuid;
-    return await createNewSession(firstUserText || '');
+    // Seed title from first user query so we are not dependent on PATCH support.
+    const seedTitle = (firstUserText || '').trim().slice(0, 120);
+    return await createNewSession(seedTitle);
 }
 
 // Load one session and render its messages
@@ -348,6 +513,10 @@ async function openSession(sessionUuid) {
             return;
         }
 
+        const sessionObj = data.session || {};
+        currentSessionTitle = (sessionObj.title || sessionTitleByUuid.get(sessionUuid) || '').trim();
+        currentSessionMessageCount = (data.messages || []).length;
+
         const chatEl = document.getElementById('chat');
         if (!chatEl) return;
         chatEl.innerHTML = '';
@@ -366,7 +535,10 @@ if (newChatBtn) {
     newChatBtn.addEventListener('click', async () => {
         const chatEl = document.getElementById('chat');
         if (chatEl) chatEl.innerHTML = '';
-        currentSessionUuid = await createNewSession('');
+        // Start a fresh local thread; first turn will create the backend session.
+        currentSessionUuid = null;
+        currentSessionTitle = '';
+        currentSessionMessageCount = 0;
         const inputEl = document.getElementById('question');
         if (inputEl) inputEl.focus();
     });
@@ -421,8 +593,29 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
             currentSessionUuid = data.session_uuid;
             loadSessions().catch(console.error);
         }
+
+        if (!currentSessionTitle || currentSessionTitle === UNTITLED_LABEL) {
+            currentSessionTitle = (userText || '').trim().slice(0, 120);
+        }
+        currentSessionMessageCount += 2;
     } catch (err) {
         console.error('Error logging chat turn', err);
+    }
+}
+
+async function maybeReseedUntitledEmptySession(firstUserText) {
+    if (!currentSessionUuid) return;
+    const t = (currentSessionTitle || '').trim().toLowerCase();
+    const isUntitled = !t || t === UNTITLED_LABEL;
+    if (!isUntitled || currentSessionMessageCount > 0) return;
+
+    const oldSessionUuid = currentSessionUuid;
+    const replacement = await createNewSession((firstUserText || '').trim().slice(0, 120));
+    if (replacement) {
+        console.info('Switched from empty untitled session', {
+            old_session_uuid: oldSessionUuid,
+            new_session_uuid: replacement,
+        });
     }
 }
 
@@ -771,6 +964,9 @@ if (form) {
 
         lastUserQuestion = q;
 
+        // If user reopened an old empty untitled session, start a titled one instead.
+        await maybeReseedUntitledEmptySession(q);
+
         // Make sure there is a ChatSession row for this conversation
         await ensureSessionExists(q);
 
@@ -801,4 +997,3 @@ if (input && form) {
 
 // Initial load of sessions when the page opens
 loadSessions().catch(console.error);
-
