@@ -34,17 +34,31 @@ def build_prompt(
         "unless the user explicitly asks for a different language."
     )
 
-    # Response policy for references + conversational continuity
+    parts.append(
+        "Answer the user's actual question directly before adding extra detail. "
+        "Use the Previous Conversation section for continuity when the user refers to earlier turns."
+    )
+
     parts.append(
         "When relevant sources are provided, ground your answer in them and add inline citations "
         "using numeric brackets like [1], [2] tied to the source list. "
-        "Include citations for key factual claims. "
-        "End the response with one short, helpful follow-up question."
+        "Include citations for factual claims that rely on those sources."
     )
 
     parts.append(
         "If uploaded PDF context is present in Relevant Sources, do not say you cannot access files. "
         "Treat that PDF content as available context and answer from it."
+    )
+
+    parts.append(
+        "If the request is ambiguous, under-specified, or depends on missing facts, "
+        "ask one specific clarifying question instead of making up assumptions. "
+        "If the available sources do not support a claim, say that plainly."
+    )
+
+    parts.append(
+        "If helpful, end with one short follow-up question. "
+        "Do not force a follow-up question for simple greetings, thanks, confirmations, or closings."
     )
     
     # Available information
@@ -96,7 +110,8 @@ def build_history_only_prompt(
 
     parts.append(
         "Be concrete, brief, and faithful to what was actually said. "
-        "End the response with one short, helpful follow-up question."
+        "If helpful, end with one short follow-up question. "
+        "Do not force a follow-up question when a direct recap is enough."
     )
 
     if user_profile_context:
@@ -109,6 +124,115 @@ def build_history_only_prompt(
             "\nPrevious Conversation:\n"
             "No earlier conversation is available in the current session context."
         )
+
+    parts.append(f"\nUser: {question}")
+    parts.append("\nAssistant:")
+
+    return "\n".join(parts)
+
+
+def build_conversation_only_prompt(
+    question: str,
+    history: Optional[str] = None,
+    user_profile_context: Optional[str] = None,
+) -> str:
+    """
+    Build a prompt for conversational turns that should not trigger retrieval.
+    This covers greetings, thanks, acknowledgements, small-talk-like control turns,
+    and lightweight clarification turns that depend mainly on the current chat.
+    """
+    parts = []
+
+    parts.append(
+        "You are an agricultural assistant for EU-FarmBook. "
+        "Handle this as a conversational turn, not a retrieval-heavy research answer."
+    )
+
+    parts.append(
+        "Use the user's latest message and the Previous Conversation section for context. "
+        "Do not invent external facts or pretend to have evidence that is not present."
+    )
+
+    parts.append(
+        "If the user is greeting, thanking, confirming, or asking a lightweight conversational question, "
+        "reply naturally and concisely."
+    )
+
+    parts.append(
+        "If the user is asking for the next step but the subject is unclear, "
+        "ask one specific clarifying question instead of guessing."
+    )
+
+    parts.append(
+        "Language rule: respond in the same language as the user's latest message, "
+        "unless the user explicitly asks for a different language."
+    )
+
+    parts.append(
+        "If helpful, end with one short follow-up question. "
+        "Do not force a follow-up question for simple greetings, thanks, confirmations, or closings."
+    )
+
+    if user_profile_context:
+        parts.append(f"\nUser Profile:\n{user_profile_context}")
+
+    if history:
+        parts.append(f"\nPrevious Conversation:\n{history}")
+
+    parts.append(f"\nUser: {question}")
+    parts.append("\nAssistant:")
+
+    return "\n".join(parts)
+
+
+def build_capabilities_prompt(
+    question: str,
+    history: Optional[str] = None,
+    user_profile_context: Optional[str] = None,
+) -> str:
+    """
+    Build a prompt for questions about what the assistant can do.
+    This should answer from the product's intended behavior rather than from retrieved sources.
+    """
+    parts = []
+
+    parts.append(
+        "You are an agricultural assistant for EU-FarmBook. "
+        "The user is asking about your capabilities, how you can help, or what kinds of tasks you handle."
+    )
+
+    parts.append(
+        "Answer from your intended product behavior, not from retrieved sources. "
+        "Do not cite documents or present capability claims as if they were sourced facts."
+    )
+
+    parts.append(
+        "Describe capabilities concretely and realistically. "
+        "You can help with agriculture and EU-FarmBook-related questions, explain concepts, "
+        "summarize or discuss uploaded PDF content when available, recap the conversation, "
+        "compare options, and guide the user step by step on a farming or project-related topic."
+    )
+
+    parts.append(
+        "Do not claim external actions you cannot perform. "
+        "If a capability depends on the user providing more information or a document, say that clearly."
+    )
+
+    parts.append(
+        "Language rule: respond in the same language as the user's latest message, "
+        "unless the user explicitly asks for a different language."
+    )
+
+    parts.append(
+        "Keep the answer concise, practical, and organized. "
+        "If helpful, end with a short question offering 2-4 concrete next-step options."
+    )
+
+    if user_profile_context:
+        parts.append(f"\nUser Profile:\n{user_profile_context}")
+
+    if history:
+        parts.append(f"\nPrevious Conversation:\n{history}")
 
     parts.append(f"\nUser: {question}")
     parts.append("\nAssistant:")

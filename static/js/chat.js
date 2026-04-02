@@ -5,6 +5,9 @@
 // -----------------------------
 const LS_TOKEN = 'fa_access_token';
 const LS_EMAIL = 'fa_email';
+const PENDING_CHAT_MESSAGES_KEY = 'fa_pending_chat_messages_v1';
+const MESSAGE_FEEDBACK_KEY = 'fa_message_feedback_v1';
+const MESSAGE_FEEDBACK_BASE = '/chatbot/api/chats';
 
 const FA_ENV = window.FA_ENV || 'local';
 
@@ -170,12 +173,221 @@ let currentSessionMessageCount = 0;
 let activeDocIds = [];
 let lastSentAttachments = [];
 const UNTITLED_LABEL = '(untitled)';
+const TEMP_TITLE_LABEL = 'Thinking...';
 const sessionTitleByUuid = new Map();
 let floatingSessionMenu = null;
 let floatingSessionMenuState = { sessionUuid: null, title: '' };
 let floatingSessionMenuHandlersBound = false;
 // Last user prompt (for logging)
 let lastUserQuestion = '';
+let pendingTitleSessionUuid = null;
+
+function getChatIdFromUrl() {
+    try {
+        const url = new URL(window.location.href);
+        const pathMatch = url.pathname.match(/^\/c\/([^/]+)$/);
+        if (pathMatch && pathMatch[1]) return pathMatch[1].trim();
+        return (url.searchParams.get('chat') || '').trim();
+    } catch {
+        return '';
+    }
+}
+
+function syncChatUrl(sessionUuid) {
+    try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('chat');
+        url.pathname = sessionUuid ? `/c/${sessionUuid}` : '/chat';
+        window.history.replaceState({ chatId: sessionUuid || null }, '', url.toString());
+    } catch {}
+}
+
+function readPendingChatStore() {
+    try {
+        const raw = sessionStorage.getItem(PENDING_CHAT_MESSAGES_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writePendingChatStore(store) {
+    try {
+        sessionStorage.setItem(PENDING_CHAT_MESSAGES_KEY, JSON.stringify(store || {}));
+    } catch {}
+}
+
+function readMessageFeedbackStore() {
+    try {
+        const raw = localStorage.getItem(MESSAGE_FEEDBACK_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeMessageFeedbackStore(store) {
+    try {
+        localStorage.setItem(MESSAGE_FEEDBACK_KEY, JSON.stringify(store || {}));
+    } catch {}
+}
+
+function messageFeedbackKey(messageText) {
+    return `${currentSessionUuid || 'no-session'}::${String(messageText || '').slice(0, 500)}`;
+}
+
+function extractMessageId(payload) {
+    if (!payload || typeof payload !== 'object') return '';
+    return String(
+        payload.message_id ||
+        payload.assistant_message_id ||
+        payload.id ||
+        payload.message?.id ||
+        payload.message?.message_id ||
+        ''
+    ).trim();
+}
+
+function getSvgIcon(name) {
+    const icons = {
+        copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+        like: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3zm0-9 4-9c.4-1 2-1 2 0v4h5.6c1.3 0 2.2 1.2 1.8 2.4l-1.9 7A2 2 0 0 1 16.6 18H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+        dislike: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3zm0 9-4 9c-.4 1-2 1-2 0v-4H5.4c-1.3 0-2.2-1.2-1.8-2.4l1.9-7A2 2 0 0 1 7.4 6H17z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+        share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 14 21 3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+        retry: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+        more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>',
+        speaker: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M18 9a4 4 0 0 1 0 6M20.5 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    };
+    return icons[name] || '';
+}
+
+async function sendMessageFeedback(sessionUuid, messageId, feedback, meta = {}) {
+    if (!authToken || !sessionUuid || !messageId) return false;
+    try {
+        const res = await fetch(`${MESSAGE_FEEDBACK_BASE}/${encodeURIComponent(sessionUuid)}/message/${encodeURIComponent(messageId)}/feedback`, {
+            method: 'POST',
+            headers: backendHeaders(),
+            body: JSON.stringify({ feedback, meta }),
+        });
+        const data = await res.json().catch(() => ({}));
+        maybeUpdateTokenFromResponse(data);
+        if (!res.ok) {
+            if (handleAuthFailure(res, data, 'messageFeedback')) return false;
+            return false;
+        }
+        return !data.status || data.status === 'success';
+    } catch {
+        return false;
+    }
+}
+
+function getPendingMessages(sessionUuid) {
+    if (!sessionUuid) return [];
+    const store = readPendingChatStore();
+    const msgs = store[sessionUuid];
+    return Array.isArray(msgs) ? msgs : [];
+}
+
+function setPendingMessages(sessionUuid, messages) {
+    if (!sessionUuid) return;
+    const store = readPendingChatStore();
+    if (messages && messages.length) store[sessionUuid] = messages;
+    else delete store[sessionUuid];
+    writePendingChatStore(store);
+}
+
+function appendPendingTurn(sessionUuid, userText, assistantText, latencyMs) {
+    if (!sessionUuid || !userText || !assistantText) return;
+    const existing = getPendingMessages(sessionUuid);
+    existing.push(
+        { role: 'user', content: userText },
+        { role: 'assistant', content: assistantText, latency_ms: latencyMs }
+    );
+    setPendingMessages(sessionUuid, existing.slice(-20));
+}
+
+function movePendingMessages(fromSessionUuid, toSessionUuid) {
+    if (!fromSessionUuid || !toSessionUuid || fromSessionUuid === toSessionUuid) return;
+    const fromMessages = getPendingMessages(fromSessionUuid);
+    if (!fromMessages.length) return;
+    const merged = mergeMessagesForDisplay(getPendingMessages(toSessionUuid), fromMessages);
+    setPendingMessages(toSessionUuid, merged.slice(-20));
+    setPendingMessages(fromSessionUuid, []);
+}
+
+function mergeMessagesForDisplay(baseMessages, extraMessages) {
+    const merged = (Array.isArray(baseMessages) ? baseMessages : []).filter(Boolean).map(m => ({ ...m }));
+    const extras = (Array.isArray(extraMessages) ? extraMessages : []).filter(Boolean);
+    if (!extras.length) return merged;
+
+    const existingPairs = merged
+        .filter(m => (m.content || '').trim())
+        .map(m => [String(m.role || '').trim().toLowerCase(), String(m.content || '').trim()]);
+
+    let scanStart = 0;
+    extras.forEach((msg) => {
+        const role = String(msg.role || '').trim().toLowerCase();
+        const content = String(msg.content || '').trim();
+        if (!content) return;
+
+        let foundAt = -1;
+        for (let idx = scanStart; idx < existingPairs.length; idx += 1) {
+            const [existingRole, existingContent] = existingPairs[idx];
+            if (existingRole === role && existingContent === content) {
+                foundAt = idx;
+                break;
+            }
+        }
+
+        if (foundAt >= 0) {
+            scanStart = foundAt + 1;
+            return;
+        }
+
+        merged.push({ ...msg, role });
+        existingPairs.push([role, content]);
+        scanStart = existingPairs.length;
+    });
+
+    return merged;
+}
+
+function prunePersistedPendingMessages(sessionUuid, backendMessages) {
+    const pending = getPendingMessages(sessionUuid);
+    if (!pending.length) return;
+
+    const remaining = [];
+    const backendPairs = (Array.isArray(backendMessages) ? backendMessages : [])
+        .filter(m => (m.content || '').trim())
+        .map(m => [String(m.role || '').trim().toLowerCase(), String(m.content || '').trim()]);
+
+    let scanStart = 0;
+    pending.forEach((msg) => {
+        const role = String(msg.role || '').trim().toLowerCase();
+        const content = String(msg.content || '').trim();
+        if (!content) return;
+
+        let foundAt = -1;
+        for (let idx = scanStart; idx < backendPairs.length; idx += 1) {
+            const [existingRole, existingContent] = backendPairs[idx];
+            if (existingRole === role && existingContent === content) {
+                foundAt = idx;
+                break;
+            }
+        }
+
+        if (foundAt >= 0) {
+            scanStart = foundAt + 1;
+            return;
+        }
+
+        remaining.push(msg);
+    });
+
+    setPendingMessages(sessionUuid, remaining);
+}
 
 function shortTitleFromText(text) {
     const cleaned = String(text || '')
@@ -196,6 +408,32 @@ function shortTitleFromText(text) {
         .filter(t => t && !stopWords.has(t.toLowerCase()));
     const chosen = (tokens.length ? tokens : cleaned.split(' ')).slice(0, 3);
     return chosen.join(' ').slice(0, 120);
+}
+
+function parseSessionDate(session) {
+    const raw = session?.updated_at || session?.created_at || session?.modified_at || '';
+    const dt = raw ? new Date(raw) : null;
+    return dt && !Number.isNaN(dt.getTime()) ? dt : null;
+}
+
+function getSessionGroupLabel(session) {
+    const dt = parseSessionDate(session);
+    if (!dt) return 'Older';
+
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startYesterday = new Date(startToday);
+    startYesterday.setDate(startYesterday.getDate() - 1);
+    const startLastWeek = new Date(startToday);
+    startLastWeek.setDate(startLastWeek.getDate() - 7);
+    const startLastMonth = new Date(startToday);
+    startLastMonth.setMonth(startLastMonth.getMonth() - 1);
+
+    if (dt >= startToday) return 'Today';
+    if (dt >= startYesterday) return 'Yesterday';
+    if (dt >= startLastWeek) return 'Last 7 Days';
+    if (dt >= startLastMonth) return 'Last 30 Days';
+    return 'Older';
 }
 
 // Shared helper: handle 401/400 auth failures from Django
@@ -238,7 +476,14 @@ async function loadSessions() {
             return;
         }
 
-        renderSessionList(data.sessions || []);
+        const sessions = data.sessions || [];
+        if (pendingTitleSessionUuid) {
+            const pendingSession = sessions.find(s => s.session_uuid === pendingTitleSessionUuid);
+            if (pendingSession && pendingSession.title && pendingSession.title !== UNTITLED_LABEL) {
+                pendingTitleSessionUuid = null;
+            }
+        }
+        renderSessionList(sessions);
     } catch (err) {
         console.error('Error loading sessions', err);
     }
@@ -314,10 +559,13 @@ async function deleteSession(sessionUuid) {
             return false;
         }
 
+        setPendingMessages(sessionUuid, []);
+
         if (currentSessionUuid === sessionUuid) {
             currentSessionUuid = null;
             currentSessionTitle = '';
             currentSessionMessageCount = 0;
+            syncChatUrl(null);
             const chatEl = document.getElementById('chat');
             if (chatEl) chatEl.innerHTML = '';
         }
@@ -427,41 +675,61 @@ function renderSessionList(sessions) {
     sessionTitleByUuid.clear();
     ensureFloatingSessionMenu();
 
+    const orderedGroups = ['Today', 'Yesterday', 'Last 7 Days', 'Last 30 Days', 'Older'];
+    const groupedSessions = new Map(orderedGroups.map(label => [label, []]));
+
     sessions.forEach(sess => {
-        const safeTitle = (sess.title || UNTITLED_LABEL);
-        sessionTitleByUuid.set(sess.session_uuid, safeTitle);
+        const groupLabel = getSessionGroupLabel(sess);
+        if (!groupedSessions.has(groupLabel)) groupedSessions.set(groupLabel, []);
+        groupedSessions.get(groupLabel).push(sess);
+    });
 
-        const li = document.createElement('li');
-        li.className = 'session-item';
-        li.dataset.uuid = sess.session_uuid;
+    orderedGroups.forEach((groupLabel) => {
+        const groupItems = groupedSessions.get(groupLabel) || [];
+        if (!groupItems.length) return;
 
-        // Text span so we can add a delete button next to it
-        const titleSpan = document.createElement('span');
-        titleSpan.className = 'session-title';
-        titleSpan.textContent = safeTitle;
-        titleSpan.addEventListener('click', () => {
-            closeSessionActionMenu();
-            openSession(sess.session_uuid);
+        const heading = document.createElement('li');
+        heading.className = 'session-group-label';
+        heading.textContent = groupLabel;
+        listEl.appendChild(heading);
+
+        groupItems.forEach(sess => {
+            const isPendingTitle = pendingTitleSessionUuid === sess.session_uuid && (!sess.title || sess.title === UNTITLED_LABEL);
+            const safeTitle = isPendingTitle ? TEMP_TITLE_LABEL : (sess.title || UNTITLED_LABEL);
+            sessionTitleByUuid.set(sess.session_uuid, safeTitle);
+
+            const li = document.createElement('li');
+            li.className = 'session-item';
+            li.dataset.uuid = sess.session_uuid;
+
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'session-title';
+            if (isPendingTitle) titleSpan.classList.add('pending-title', 'blink');
+            titleSpan.textContent = safeTitle;
+            titleSpan.addEventListener('click', () => {
+                closeSessionActionMenu();
+                openSession(sess.session_uuid);
+            });
+
+            const actionsWrap = document.createElement('div');
+            actionsWrap.className = 'session-actions';
+
+            const menuBtn = document.createElement('button');
+            menuBtn.type = 'button';
+            menuBtn.className = 'session-menu-trigger';
+            menuBtn.title = 'Chat options';
+            menuBtn.textContent = '⋯';
+
+            menuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openSessionActionMenu(menuBtn, sess.session_uuid, safeTitle);
+            });
+            actionsWrap.appendChild(menuBtn);
+
+            li.appendChild(titleSpan);
+            li.appendChild(actionsWrap);
+            listEl.appendChild(li);
         });
-
-        const actionsWrap = document.createElement('div');
-        actionsWrap.className = 'session-actions';
-
-        const menuBtn = document.createElement('button');
-        menuBtn.type = 'button';
-        menuBtn.className = 'session-menu-trigger';
-        menuBtn.title = 'Chat options';
-        menuBtn.textContent = '⋯';
-
-        menuBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openSessionActionMenu(menuBtn, sess.session_uuid, safeTitle);
-        });
-        actionsWrap.appendChild(menuBtn);
-
-        li.appendChild(titleSpan);
-        li.appendChild(actionsWrap);
-        listEl.appendChild(li);
     });
 }
 
@@ -496,6 +764,8 @@ async function createNewSession(initialTitle = '') {
         currentSessionUuid = data.session_uuid;
         currentSessionTitle = (data.title || initialTitle || '').trim();
         currentSessionMessageCount = 0;
+        pendingTitleSessionUuid = currentSessionUuid;
+        syncChatUrl(currentSessionUuid);
         // Reload list so the new chat appears at the top
         loadSessions().catch(console.error);
         return currentSessionUuid;
@@ -508,15 +778,14 @@ async function createNewSession(initialTitle = '') {
 // Ensure a session exists before logging the first turn
 async function ensureSessionExists(firstUserText) {
     if (currentSessionUuid) return currentSessionUuid;
-    // Seed title from first user query so we are not dependent on PATCH support.
-    const seedTitle = shortTitleFromText(firstUserText);
-    return await createNewSession(seedTitle);
+    return await createNewSession('');
 }
 
 // Load one session and render its messages
 async function openSession(sessionUuid) {
     if (!authToken) return;
     currentSessionUuid = sessionUuid;
+    syncChatUrl(sessionUuid);
     activeDocIds = [];
     clearUploadedFileChips();
 
@@ -542,7 +811,10 @@ async function openSession(sessionUuid) {
         }
 
         const sessionObj = data.session || {};
-        const messages = Array.isArray(data.messages) ? data.messages : [];
+        const backendMessages = Array.isArray(data.messages) ? data.messages : [];
+        const pendingMessages = getPendingMessages(sessionUuid);
+        const messages = mergeMessagesForDisplay(backendMessages, pendingMessages);
+        prunePersistedPendingMessages(sessionUuid, backendMessages);
         currentSessionTitle = (sessionObj.title || sessionTitleByUuid.get(sessionUuid) || '').trim();
         currentSessionMessageCount = messages.length;
 
@@ -554,10 +826,18 @@ async function openSession(sessionUuid) {
             const role = m.role === 'user' ? 'you' : 'assistant';
             const bubble = addMessage(role, m.content);
             if (role === 'assistant') {
+                const messageId = extractMessageId(m);
+                if (messageId) bubble.dataset.messageId = messageId;
+                renderAssistantRichText(bubble);
                 attachAssistantFooter(bubble, m.latency_ms, 'Completed.');
+                attachResponseActions(bubble);
                 const q = extractLastQuestion(m.content || '');
                 if (q) lastAssistantFollowupQuestion = q;
             }
+        });
+
+        window.requestAnimationFrame(() => {
+            scrollToBottom();
         });
 
         if (!messages.length) {
@@ -581,6 +861,7 @@ if (newChatBtn) {
         currentSessionUuid = null;
         currentSessionTitle = '';
         currentSessionMessageCount = 0;
+        syncChatUrl(null);
         activeDocIds = [];
         clearUploadedFileChips();
         const inputEl = document.getElementById('question');
@@ -601,6 +882,10 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
         return;
     }
 
+    if (currentSessionUuid) {
+        appendPendingTurn(currentSessionUuid, userText, assistantText, latencyMs);
+    }
+
     console.log('Sending to:', LOG_TURN_URL);
     
     try {
@@ -615,6 +900,7 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
                     model: selModel ? selModel.value : null,
                     latency_ms: latencyMs,
                     attachments: lastSentAttachments,
+                    ...(nextTurnMeta || {}),
                 },
             }),
         });
@@ -641,19 +927,41 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
                 previous_session_uuid: currentSessionUuid,
                 backend_session_uuid: data.session_uuid,
             });
+            movePendingMessages(currentSessionUuid, data.session_uuid);
             currentSessionUuid = data.session_uuid;
+            syncChatUrl(currentSessionUuid);
             loadSessions().catch(console.error);
         } else if (!currentSessionUuid && data.session_uuid) {
             currentSessionUuid = data.session_uuid;
+            syncChatUrl(currentSessionUuid);
             loadSessions().catch(console.error);
+        }
+
+        if (currentSessionUuid) {
+            prunePersistedPendingMessages(currentSessionUuid, [
+                { role: 'user', content: userText },
+                { role: 'assistant', content: assistantText },
+            ]);
+        }
+
+        const assistantMessageId = extractMessageId(data);
+        if (assistantMessageId && answerNode) {
+            answerNode.dataset.messageId = assistantMessageId;
+            attachResponseActions(answerNode);
         }
 
         if (!currentSessionTitle || currentSessionTitle === UNTITLED_LABEL) {
             currentSessionTitle = shortTitleFromText(userText);
         }
         currentSessionMessageCount += 2;
+        nextTurnMeta = null;
+        if (currentSessionUuid && pendingTitleSessionUuid === currentSessionUuid) {
+            window.setTimeout(() => loadSessions().catch(console.error), 1200);
+            window.setTimeout(() => loadSessions().catch(console.error), 3000);
+        }
     } catch (err) {
         console.error('Error logging chat turn', err);
+        nextTurnMeta = null;
     }
 }
 
@@ -716,6 +1024,7 @@ let serverTimingMs = null;
 let statusLeft = null;
 let statusRight = null;
 let lastAssistantFollowupQuestion = '';
+let nextTurnMeta = null;
 
 function isShortAffirmation(text) {
     const t = String(text || '')
@@ -802,59 +1111,138 @@ function getStatusPartsForBubble(bubble) {
     };
 }
 
-// Add a small "speak" icon for a given assistant bubble.
-function attachSpeakButton(bubble, leftContainer = null) {
+function speakBubbleText(bubble) {
     if (!bubble || !window.speechSynthesis) return;
+    const text = bubble.dataset.rawText || bubble.textContent || '';
+    if (!text.trim()) return;
 
-    const container = bubble.parentElement; // .msg wrapper
+    const utter = new SpeechSynthesisUtterance(text);
+    const voices = window.speechSynthesis.getVoices() || [];
+    const gbVoices = voices.filter(v =>
+        v.lang && v.lang.toLowerCase().startsWith('en-gb')
+    );
+    if (gbVoices.length) {
+        utter.voice = gbVoices[0];
+    }
 
-    // Avoid duplicates on the same message
-    const existing = container.querySelector('.speak-btn');
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+}
+
+async function copyTextToClipboard(text) {
+    if (!text) return false;
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function getAssociatedUserText(container) {
+    let cursor = container ? container.previousElementSibling : null;
+    while (cursor) {
+        if (cursor.classList && cursor.classList.contains('msg') && cursor.classList.contains('you')) {
+            const bubble = cursor.querySelector('.bubble');
+            return (bubble?.textContent || '').trim();
+        }
+        cursor = cursor.previousElementSibling;
+    }
+    return '';
+}
+
+function attachResponseActions(bubble) {
+    if (!bubble || !bubble.parentElement) return;
+    const container = bubble.parentElement;
+
+    const existing = container.querySelector('.response-actions');
     if (existing) existing.remove();
 
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'speak-btn';
-    btn.textContent = '🔊';
-    btn.title = 'Listen to this answer';
+    const actions = document.createElement('div');
+    actions.className = 'response-actions';
+    const copyNotice = document.createElement('span');
+    copyNotice.className = 'response-action-notice hidden';
+    let copyNoticeTimer = null;
 
-    btn.style.marginLeft = '8px';
-    btn.style.cursor = 'pointer';
-    btn.style.border = 'none';
-    btn.style.background = 'transparent';
-    btn.style.fontSize = '14px';
-    btn.style.padding = '0';
+    const rawText = bubble.dataset.rawText || bubble.textContent || '';
+    const feedbackStore = readMessageFeedbackStore();
+    const feedbackKey = messageFeedbackKey(rawText);
+    let feedbackValue = feedbackStore[feedbackKey] || '';
 
-    btn.addEventListener('click', () => {
-        const text = bubble.textContent || '';
-        if (!text.trim()) return;
+    function makeIconButton(label, title, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'response-action-btn';
+        btn.innerHTML = `${getSvgIcon(label)}<span class="sr-only">${title}</span>`;
+        btn.title = title;
+        btn.addEventListener('click', onClick);
+        return btn;
+    }
 
-        const utter = new SpeechSynthesisUtterance(text);
+    function applyFeedbackState(likeBtn) {
+        likeBtn.classList.toggle('active', feedbackValue === 'up');
+    }
 
-        // Prefer an en-GB voice if available
-        const voices = window.speechSynthesis.getVoices() || [];
-        const gbVoices = voices.filter(v =>
-            v.lang && v.lang.toLowerCase().startsWith('en-gb')
-        );
-        if (gbVoices.length) {
-            utter.voice = gbVoices[0];
-        }
+    function showActionNotice(text) {
+        copyNotice.textContent = text;
+        copyNotice.classList.remove('hidden');
+        if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer);
+        copyNoticeTimer = window.setTimeout(() => {
+            copyNotice.classList.add('hidden');
+        }, 1500);
+    }
 
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(utter);
+    const copyBtn = makeIconButton('copy', 'Copy response', async () => {
+        const ok = await copyTextToClipboard(rawText);
+        copyBtn.classList.toggle('active', ok);
+        setTimeout(() => copyBtn.classList.remove('active'), 1200);
+        if (ok) showActionNotice('Copied');
     });
 
-    if (leftContainer) {
-        leftContainer.appendChild(document.createTextNode(' '));
-        leftContainer.appendChild(btn);
-    } else if (statusLeft) {
-        statusLeft.appendChild(document.createTextNode(' '));
-        statusLeft.appendChild(btn);
-    } else if (statusNode) {
-        statusNode.appendChild(btn);
-    } else {
-        container.appendChild(btn);
-    }
+    const likeBtn = makeIconButton('like', 'Helpful', async () => {
+        const nextValue = feedbackValue === 'up' ? '' : 'up';
+        const ok = await sendMessageFeedback(currentSessionUuid, bubble.dataset.messageId || '', nextValue || 'none', {
+            action: 'like',
+        });
+        if (!bubble.dataset.messageId || ok) {
+            feedbackValue = nextValue;
+        }
+        const store = readMessageFeedbackStore();
+        if (feedbackValue) store[feedbackKey] = feedbackValue;
+        else delete store[feedbackKey];
+        writeMessageFeedbackStore(store);
+        applyFeedbackState(likeBtn);
+    });
+
+    const regenerateBtn = makeIconButton('retry', 'Regenerate response', async () => {
+        const userText = getAssociatedUserText(container);
+        if (!userText || es) return;
+        regenerateBtn.disabled = true;
+        try {
+            await ensureSessionExists(userText);
+            lastUserQuestion = userText;
+            nextTurnMeta = {
+                action: 'retry',
+                retry_of_message_id: bubble.dataset.messageId || null,
+            };
+            startStream(userText);
+        } finally {
+            regenerateBtn.disabled = false;
+        }
+    });
+
+    const readAloudBtn = makeIconButton('speaker', 'Read aloud', () => {
+        speakBubbleText(bubble);
+    });
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(likeBtn);
+    actions.appendChild(regenerateBtn);
+    actions.appendChild(readAloudBtn);
+    actions.appendChild(copyNotice);
+    applyFeedbackState(likeBtn);
+
+    container.appendChild(actions);
 }
 
 function attachAssistantFooter(bubble, latencyMs, stateText = 'Completed.') {
@@ -867,8 +1255,6 @@ function attachAssistantFooter(bubble, latencyMs, stateText = 'Completed.') {
     right.textContent = (latencyMs != null && isFinite(latencyMs))
         ? `Thought for ${formatDuration(latencyMs)}`
         : '';
-
-    attachSpeakButton(bubble, left);
 }
 
 function addMessage(role, text) {
@@ -954,10 +1340,77 @@ function escapeHTML(s) {
     }[m]));
 }
 
-function renderCitationsToSuperscript(node) {
-    const txt = node.textContent;
-    const html = escapeHTML(txt).replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
-    node.innerHTML = html;
+function formatInlineAssistantText(text) {
+    const codeTokens = [];
+    let withCodePlaceholders = String(text || '').replace(/`([^`]+)`/g, (_, code) => {
+        const token = `@@CODE${codeTokens.length}@@`;
+        codeTokens.push(`<code>${escapeHTML(code)}</code>`);
+        return token;
+    });
+
+    let html = escapeHTML(withCodePlaceholders);
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/(^|[^\w*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    html = html.replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
+
+    codeTokens.forEach((tokenHtml, idx) => {
+        html = html.replace(`@@CODE${idx}@@`, tokenHtml);
+    });
+
+    return html;
+}
+
+function renderAssistantRichText(node) {
+    const raw = node.textContent || '';
+    node.dataset.rawText = raw;
+
+    const lines = raw.replace(/\r\n/g, '\n').split('\n');
+    const blocks = [];
+    let paragraphLines = [];
+    let listItems = [];
+
+    function flushParagraph() {
+        if (!paragraphLines.length) return;
+        const content = paragraphLines
+            .map(line => formatInlineAssistantText(line))
+            .join('<br>');
+        blocks.push(`<p>${content}</p>`);
+        paragraphLines = [];
+    }
+
+    function flushList() {
+        if (!listItems.length) return;
+        const itemsHtml = listItems
+            .map(item => `<li>${formatInlineAssistantText(item)}</li>`)
+            .join('');
+        blocks.push(`<ul>${itemsHtml}</ul>`);
+        listItems = [];
+    }
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
+
+        if (!trimmed) {
+            flushParagraph();
+            flushList();
+            continue;
+        }
+
+        if (bulletMatch) {
+            flushParagraph();
+            listItems.push(bulletMatch[1]);
+            continue;
+        }
+
+        flushList();
+        paragraphLines.push(line);
+    }
+
+    flushParagraph();
+    flushList();
+
+    node.innerHTML = blocks.join('') || formatInlineAssistantText(raw);
 }
 
 function getAttachedFileNames() {
@@ -1117,13 +1570,14 @@ function startStream(q) {
     es.addEventListener('done', () => {
         setStatus(cancelled ? 'Stopped.' : 'Completed.');
 
-        renderCitationsToSuperscript(answerNode);
+        renderAssistantRichText(answerNode);
 
         const ms = (serverTimingMs != null ? serverTimingMs : (Date.now() - clientStartTs));
         attachAssistantFooter(answerNode, ms, cancelled ? 'Stopped.' : 'Completed.');
+        attachResponseActions(answerNode);
         renderSourcesInline(answerNode, pendingSources);
 
-        const assistantText = answerNode ? answerNode.textContent : '';
+        const assistantText = answerNode ? (answerNode.dataset.rawText || answerNode.textContent || '') : '';
         const followup = extractLastQuestion(assistantText);
         if (followup) lastAssistantFollowupQuestion = followup;
         // Fire-and-forget log to backend
@@ -1333,4 +1787,25 @@ if (input && form) {
 }
 
 // Initial load of sessions when the page opens
-loadSessions().catch(console.error);
+(async function initChatPage() {
+    await loadSessions().catch(console.error);
+    const chatId = getChatIdFromUrl();
+    if (chatId) {
+        await openSession(chatId).catch(console.error);
+    }
+})();
+
+window.addEventListener('popstate', async () => {
+    const chatId = getChatIdFromUrl();
+    if (chatId) {
+        await openSession(chatId).catch(console.error);
+        return;
+    }
+
+    currentSessionUuid = null;
+    currentSessionTitle = '';
+    currentSessionMessageCount = 0;
+    activeDocIds = [];
+    clearUploadedFileChips();
+    if (chat) chat.innerHTML = '';
+});

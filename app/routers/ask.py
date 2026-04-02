@@ -35,7 +35,9 @@ from app.services.pdf_service import (
     docs_from_attachment_records,
 )
 from app.services.prompt_service import (
+    build_capabilities_prompt,
     build_prompt,
+    build_conversation_only_prompt,
     build_history_only_prompt,
     build_summary_prompt,
     build_title_prompt,
@@ -104,7 +106,8 @@ def _history_scope(history_text: str) -> str:
 async def _decide_turn_strategy(question: str, history_text: str) -> str:
     """
     Use the model to decide whether the current turn should be answered strictly
-    from conversation history or follow the normal retrieval flow.
+    from conversation history, handled as a conversational turn, answered as a capability question,
+    or follow the normal retrieval flow.
     This keeps the routing behavior dynamic instead of hardcoding keyword rules.
     """
     prompt = (
@@ -115,11 +118,17 @@ async def _decide_turn_strategy(question: str, history_text: str) -> str:
         "what has been discussed, a recap, or what the assistant/user said earlier. "
         "The answer should come strictly from chat history, and if history is missing the assistant "
         "should say so honestly.\n"
+        '- "conversation_only": the user is greeting, thanking, acknowledging, confirming, '
+        "asking a lightweight conversational question, or asking for a clarification that should be "
+        "handled from the current chat without retrieval.\n"
+        '- "assistant_capabilities": the user is asking what the assistant can do, how it can help, '
+        "what its capabilities are, or what kinds of support it provides. "
+        "These turns should be answered from the assistant's intended product behavior, not retrieval.\n"
         '- "normal": use the standard retrieval-and-conversation flow.\n\n'
         f"User message:\n{question}\n\n"
         "Previous Conversation:\n"
         f"{history_text or 'No earlier conversation is available.'}\n\n"
-        'Return exactly: {"mode":"history_only"} or {"mode":"normal"}'
+        'Return exactly: {"mode":"history_only"} or {"mode":"conversation_only"} or {"mode":"assistant_capabilities"} or {"mode":"normal"}'
     )
     try:
         raw = await asyncio.wait_for(
@@ -130,11 +139,67 @@ async def _decide_turn_strategy(question: str, history_text: str) -> str:
         if match:
             data = json.loads(match.group(0))
             mode = (data.get("mode") or "").strip().lower()
-            if mode in {"history_only", "normal"}:
+            if mode in {"history_only", "conversation_only", "assistant_capabilities", "normal"}:
                 return mode
     except Exception:
         pass
     return "normal"
+
+
+async def _resolve_turn_context(
+    question: str,
+    history_text: str,
+    last_assistant_question: str = "",
+    followup_hint: str = "",
+) -> dict:
+    """
+    Use the model to turn terse or elliptical user replies into a clean,
+    standalone interpretation for the next assistant turn.
+    This avoids brittle affirmation heuristics and prevents accidental
+    continuation from trailing fragments of the prior answer.
+    """
+    prompt = (
+        "You are interpreting the user's latest turn for an agricultural assistant.\n"
+        "Return JSON only.\n\n"
+        "Your task:\n"
+        "1. Decide whether the latest user message is already a standalone request.\n"
+        "2. If it is short, elliptical, or mainly confirms the assistant's previous question, "
+        "rewrite it into a clear standalone intent grounded only in the conversation.\n"
+        "3. Provide a prompt-ready instruction that helps the assistant answer the turn cleanly.\n\n"
+        "Rules:\n"
+        "- Do not invent facts not present in the conversation.\n"
+        "- Do not continue or quote trailing fragments from the previous assistant answer.\n"
+        "- If the user is agreeing to proceed after a prior assistant question, make that explicit.\n"
+        "- Keep the resolved text concise and faithful.\n\n"
+        f"Latest user message:\n{question}\n\n"
+        f"Last assistant question:\n{last_assistant_question or 'None'}\n\n"
+        f"Follow-up hint:\n{followup_hint or 'None'}\n\n"
+        "Previous Conversation:\n"
+        f"{history_text or 'No earlier conversation is available.'}\n\n"
+        "Return exactly this JSON shape:\n"
+        '{"resolved_user_message":"...","assistant_instruction":"..."}'
+    )
+    try:
+        raw = await asyncio.wait_for(
+            generate_once(prompt, temperature=0.0, max_tokens=180),
+            timeout=2.0,
+        )
+        match = _re.search(r"\{.*\}", raw or "", flags=_re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            resolved = (data.get("resolved_user_message") or "").strip()
+            instruction = (data.get("assistant_instruction") or "").strip()
+            if resolved or instruction:
+                return {
+                    "resolved_user_message": resolved or question,
+                    "assistant_instruction": instruction or resolved or question,
+                }
+    except Exception:
+        pass
+    return {
+        "resolved_user_message": question,
+        "assistant_instruction": question,
+    }
 
 
 SYSTEM_PROMPT_TAG = "farm-assistant-v2"
@@ -154,24 +219,6 @@ def _short_title_2_3_words(raw: str) -> str:
         return ""
     # Keep at most 3 words; if model returns 1 word, keep it as-is.
     return " ".join(words[:3])[:120]
-
-
-def _is_short_affirmation(text: str) -> bool:
-    t = (text or "").strip().lower()
-    t = _re.sub(r"[^\w\s]", " ", t)
-    t = _re.sub(r"\s+", " ", t).strip()
-    if not t:
-        return False
-    tokens = [w for w in _re.split(r"\s+", t) if w]
-    if len(tokens) > 4:
-        return False
-    canonical = {
-        "yes", "yea", "yeah", "yep", "yup",
-        "yes please", "please", "sure", "sure thing",
-        "okay", "ok", "alright", "all right",
-        "go ahead", "continue", "more", "tell me more", "sounds good",
-    }
-    return t in canonical
 
 
 def _extract_last_assistant_question(messages: list[dict]) -> str:
@@ -385,21 +432,21 @@ async def ask_stream(
         history_text = format_history(state.get("messages", []))
         initial_llm_ctx = state.get("llm_context")
         is_first_turn = not state.get("messages")
-        effective_q = user_q
-        prompt_q = user_q
-        if _is_short_affirmation(user_q):
-            prev_q = _extract_last_assistant_question(state.get("messages", []))
-            if not prev_q and followup_hint:
-                prev_q = (followup_hint or "").strip()[:300]
-            if prev_q:
-                effective_q = f"User confirmed previous assistant question. Continue from: {prev_q}"
-                prompt_q = f"{user_q}\n\nContinue based on this previous assistant question: {prev_q}"
+        prev_q = _extract_last_assistant_question(state.get("messages", []))
+        if not prev_q and followup_hint:
+            prev_q = (followup_hint or "").strip()[:300]
+
+        turn_context = await _resolve_turn_context(
+            question=user_q,
+            history_text=history_text,
+            last_assistant_question=prev_q,
+            followup_hint=followup_hint or "",
+        )
+        effective_q = (turn_context.get("resolved_user_message") or user_q).strip() or user_q
+        prompt_q = (turn_context.get("assistant_instruction") or effective_q).strip() or effective_q
 
         retrieval_q = effective_q
-        if (
-            not retrieval_q.startswith("User confirmed previous assistant question. Continue from:")
-            and not _should_skip_query_normalization(retrieval_q)
-        ):
+        if not _should_skip_query_normalization(retrieval_q):
             retrieval_q = await _normalize_query_for_retrieval(retrieval_q)
         if requested_doc_ids and _is_file_handoff_query(user_q):
             retrieval_q = (
@@ -454,6 +501,12 @@ async def ask_stream(
 
         if turn_strategy == "history_only":
             async for x in emit("status", {"stage": "History", "message": "Answering from conversation history..."}):
+                yield x
+        elif turn_strategy == "conversation_only":
+            async for x in emit("status", {"stage": "Conversation", "message": "Answering from the current conversation..."}):
+                yield x
+        elif turn_strategy == "assistant_capabilities":
+            async for x in emit("status", {"stage": "Capabilities", "message": "Answering about assistant capabilities..."}):
                 yield x
         else:
             # --- Normal retrieval flow ---
@@ -567,6 +620,18 @@ async def ask_stream(
         
         if turn_strategy == "history_only":
             prompt = build_history_only_prompt(
+                question=prompt_q,
+                history=history_text,
+                user_profile_context=profile_context,
+            )
+        elif turn_strategy == "conversation_only":
+            prompt = build_conversation_only_prompt(
+                question=prompt_q,
+                history=history_text,
+                user_profile_context=profile_context,
+            )
+        elif turn_strategy == "assistant_capabilities":
+            prompt = build_capabilities_prompt(
                 question=prompt_q,
                 history=history_text,
                 user_profile_context=profile_context,

@@ -66,6 +66,12 @@ This document lists the additive API endpoints exposed for the current Farm Assi
 - `POST /chatbot/api/chats/{session_id}/log-turn`
   - Same as above, with session in the path.
 
+- `POST /chatbot/api/chats/{session_id}/message/{message_id}/feedback`
+  - Persist message-level feedback for an assistant reply.
+  - Body:
+    - `feedback`
+    - `meta`
+
 ## User Profile
 
 - `GET /chatbot/api/users/me/profile`

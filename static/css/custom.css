@@ -54,6 +54,20 @@ button:hover { background: #1e2a3e; }
 .you .bubble { border-color: #2a3d57; }
 
 .assistant .bubble { border-color: #314764; }
+.assistant .bubble { white-space: normal; }
+.assistant .bubble p { margin: 0 0 12px; }
+.assistant .bubble p:last-child { margin-bottom: 0; }
+.assistant .bubble ul { margin: 0 0 12px; padding-left: 22px; }
+.assistant .bubble ul:last-child { margin-bottom: 0; }
+.assistant .bubble li { margin: 4px 0; }
+.assistant .bubble code {
+    background: #111b29;
+    border: 1px solid #223043;
+    border-radius: 6px;
+    padding: 1px 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+}
 
 .status {
     display: flex;
@@ -70,6 +84,69 @@ button:hover { background: #1e2a3e; }
     margin-left: auto;
     color: var(--muted);
     white-space: nowrap;
+}
+
+.response-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.response-action-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid #223043;
+    background: transparent;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.response-action-btn svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+}
+
+.response-action-btn:hover {
+    background: #1a2434;
+    color: var(--text);
+}
+
+.response-action-btn.active {
+    color: var(--accent);
+    border-color: #35567d;
+    background: #152334;
+}
+
+.response-action-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.response-action-notice {
+    margin-left: 6px;
+    color: var(--accent);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
 
 .muted { color: var(--muted); }
@@ -147,6 +224,15 @@ select {
     overflow-y: auto;
 }
 
+.session-group-label {
+    margin: 14px 8px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7f92a8;
+}
+
 .session-item {
     padding: 6px 8px;
     border-radius: 8px;
@@ -171,6 +257,11 @@ select {
     text-overflow: ellipsis;
     white-space: nowrap;
     cursor: pointer;
+}
+
+.session-title.pending-title {
+    color: #b8c6d6;
+    font-style: italic;
 }
 
 .session-actions {

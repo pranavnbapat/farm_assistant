@@ -69,6 +69,11 @@ class ChatTurnLogIn(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class MessageFeedbackIn(BaseModel):
+    feedback: str = Field(examples=["up", "down", "none"])
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
 class LogoutIn(BaseModel):
     email: str
 

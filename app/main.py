@@ -28,6 +28,7 @@ from app.schemas import (
     ChatSessionPatchIn,
     ChatTurnLogIn,
     LogoutIn,
+    MessageFeedbackIn,
     UserFactCreateIn,
     UserProfileBuildIn,
     UserProfilePatchIn,
@@ -200,6 +201,18 @@ def chat_page(request: Request):
     )
     # return CHAT_HTML.read_text(encoding="utf-8")
 
+
+@app.get("/c/{session_id}", response_class=HTMLResponse, include_in_schema=False)
+def chat_page_with_session(session_id: str, request: Request):
+    """Chat UI with a path-based chat id, similar to ChatGPT-style URLs."""
+    return templates.TemplateResponse(
+        request=request,
+        name="ask_stream.html",
+        context={
+            "FA_ENV": S.FA_ENV,
+        },
+    )
+
 class LoginBody(BaseModel):
     email: str
     password: str
@@ -355,6 +368,22 @@ async def proxy_log_turn(request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/log-turn/"
     logger.info(f"Proxying chat log to {url}")
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
+
+
+@app.post("/chatbot/api/chats/{session_id}/message/{message_id}/feedback", tags=["Chats"], summary="Add feedback to a specific message")
+async def api_message_feedback(session_id: str, message_id: str, body: MessageFeedbackIn, request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/message/{message_id}/feedback/"
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump())
+
+
+@app.post("/proxy/chat/sessions/{session_id}/message/{message_id}/feedback/", include_in_schema=False)
+async def proxy_message_feedback(session_id: str, message_id: str, request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/message/{message_id}/feedback/"
     return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
 
 
