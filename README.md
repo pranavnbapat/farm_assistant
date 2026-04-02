@@ -85,6 +85,9 @@ The application will be available at `http://localhost:8000`.
    pip install -r requirements.txt
    ```
 
+   Note: `requirements.txt` intentionally lists only the app's direct dependencies.
+   Transitive dependencies are resolved by `pip` during installation.
+
 3. Run the application:
    ```bash
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
