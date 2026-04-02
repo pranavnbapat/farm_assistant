@@ -18,7 +18,6 @@ Farm Assistant is a conversational AI designed to help farmers, researchers, and
 - **Multi-language Support**: Responds in the same language as the user's question (all 24 EU languages)
 - **User Personalization**: Builds user profiles from conversations to tailor responses
 - **Voice Support**: Speech-to-Text (STT) and Text-to-Speech (TTS) with 24 EU languages
-- **Response Caching**: Redis-based caching for improved performance
 - **Authentication**: Secure JWT-based authentication integrated with Django backend
 
 ## Tech Stack
@@ -28,7 +27,6 @@ Farm Assistant is a conversational AI designed to help farmers, researchers, and
 - **Search Engine**: OpenSearch (neural search with vector embeddings)
 - **Frontend**: Vanilla JavaScript with Server-Sent Events
 - **Text-to-Speech**: Browser Web Speech API with Piper TTS (server-side option)
-- **Caching**: Redis
 - **Containerization**: Docker & Docker Compose
 
 ## Quick Start
@@ -38,7 +36,6 @@ Farm Assistant is a conversational AI designed to help farmers, researchers, and
 - Docker and Docker Compose
 - Access to a vLLM instance (RunPod, self-hosted, or cloud provider)
 - Access to an OpenSearch instance with indexed agricultural content
-- Redis instance (optional, for caching)
 
 ### Environment Setup
 
@@ -168,13 +165,6 @@ All configuration is managed through environment variables or the `.env` file:
 |----------|-------------|---------|
 | `INTENT_ROUTER_URL` | Intent classification service | `https://intent-router.nexavion.com/intent-router` |
 
-### Redis Cache
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `REDIS_URL` | Redis connection string | `redis://127.0.0.1:6379/0` |
-| `CACHE_ENABLED` | Enable response caching | `true` |
-| `CACHE_TTL_SECONDS` | Cache TTL in seconds | `86400` |
 | `MAX_ACTIVE_GENERATIONS` | Max concurrent LLM requests | `3` |
 
 ### Piper TTS
@@ -244,7 +234,6 @@ All configuration is managed through environment variables or the `.env` file:
 │   │   ├── search_service.py   # Search orchestration
 │   │   └── user_profile_service.py  # User personalization
 │   └── utils/
-│       └── response_cache.py   # Redis caching utilities
 ├── templates/
 │   ├── login.html              # Login page
 │   └── ask_stream.html         # Chat interface

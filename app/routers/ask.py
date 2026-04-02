@@ -45,7 +45,6 @@ from app.services.prompt_service import (
 from app.services.search_service import build_search_payload, collect_os_items
 from app.services.user_profile_service import UserProfileService
 from app.schemas import AskIn, ChatMessageStreamIn, SummariseIn, SummariseOut
-from app.utils.response_cache import make_key, get_cached, set_cached, hash_contexts
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
@@ -658,34 +657,6 @@ async def ask_stream(
                 yield x
             return
 
-        # Cache key
-        ctx_h = hash_contexts(contexts) if contexts else ""
-        params = _cache_params(_temperature, _max_tokens, model)
-        history_scope = _history_scope(history_text)
-
-        ckey = make_key(
-            user_q=prompt_q,
-            system_tag=f"{SYSTEM_PROMPT_TAG}:{turn_strategy}",
-            model_id=params["model"],
-            params=params,
-            ctx_hash=ctx_h,
-            user_scope=history_scope,
-        )
-        
-        cached = get_cached(ckey)
-        if cached:
-            for tok in cached["answer"].split():
-                async for x in emit("token", tok + " "):
-                    yield x
-            async for x in emit("sources", []):
-                yield x
-            total_ms = int((time.perf_counter() - t0) * 1000)
-            async for x in emit("timing", {"total_ms": total_ms, "search_ms": 0, "context_ms": 0, "llm_ms": 0}):
-                yield x
-            async for x in emit("done", {"message": "complete", "cache": True}):
-                yield x
-            return
-
         # Concurrency gate
         async for x in _acquire_or_queue():
             yield x
@@ -765,14 +736,6 @@ async def ask_stream(
                     user_uuid, session_id, user_q, full_text, auth_token
                 )
             )
-
-        # Cache
-        set_cached(ckey, full_text, meta={
-            "model": params["model"],
-            "params": params,
-            "system_tag": SYSTEM_PROMPT_TAG,
-            "ctx_len": len(contexts),
-        })
 
         # Extract citations
         norm_text = _re.sub(r"\(\s*source[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\s*\)", r"[\1]", full_text, flags=_re.IGNORECASE)

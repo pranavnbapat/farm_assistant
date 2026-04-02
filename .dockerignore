@@ -44,3 +44,5 @@ output/
 *.bak
 *.swp
 *.onnx
+
+testing/

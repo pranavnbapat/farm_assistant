@@ -34,12 +34,12 @@ The Farm Assistant is a conversational AI system built on a **Retrieval-Augmente
                                     │
         ┌───────────────────────────┼───────────────────────────┐
         ▼                           ▼                           ▼
-┌───────────────┐          ┌───────────────┐          ┌───────────────┐
-│  OpenSearch   │          │     vLLM      │          │    Redis      │
-│  (Documents)  │          │    (LLM)      │          │   (Cache)     │
-└───────────────┘          └───────────────┘          └───────────────┘
-                                    │
-                                    ▼
+┌───────────────┐          ┌───────────────┐
+│  OpenSearch   │          │     vLLM      │
+│  (Documents)  │          │    (LLM)      │
+└───────────────┘          └───────────────┘
+                  │
+                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                      Django Backend (Auth/Sessions)                     │
 │  ┌─────────────┐   ┌─────────────┐   ┌────────────────────────────────┐ │
@@ -264,11 +264,6 @@ prompt = build_prompt(contexts, question, history, profile)
 response = await stream_generate(prompt)
 ```
 
-**Caching**:
-- Cache key based on: question, context hash, model, parameters, history
-- Redis-backed with configurable TTL
-- Returns cached responses as simulated streams
-
 **Concurrency Control**:
 - Semaphore-based limiting (default: 3 concurrent generations)
 - Queue status messages when at capacity
@@ -367,7 +362,6 @@ Comprehensive voice support for 24 EU languages:
 1. Request Received
    ├── Validate authentication (JWT in localStorage/query param)
    ├── Extract user UUID from token
-   ├── Check cache (Redis)
    └── Initialize streaming response
 
 2. Domain Validation
@@ -461,13 +455,12 @@ Environment-specific backends:
 
 ## Performance Optimizations
 
-1. **Response Caching**: Redis-based with SHA-256 keys
-2. **Streaming**: Immediate token delivery via SSE
-3. **Connection Pooling**: HTTPX async clients with keep-alive
-4. **Concurrent Search**: Parallel document fetching
-5. **Lazy Loading**: Models loaded on first request
-6. **Context Truncation**: History limited to fit context window
-7. **Profile Caching**: User profiles cached per request
+1. **Streaming**: Immediate token delivery via SSE
+2. **Connection Pooling**: HTTPX async clients with keep-alive
+3. **Concurrent Search**: Parallel document fetching
+4. **Lazy Loading**: Models loaded on first request
+5. **Context Truncation**: History limited to fit context window
+6. **Profile Caching**: User profiles cached per request
 
 ## Deployment
 
@@ -493,7 +486,6 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
 | vLLM | LLM inference | Yes (primary) |
 | OpenSearch | Document search | Yes |
 | Django Backend | Auth, sessions, profiles | Yes |
-| Redis | Response caching | No |
 | Intent Router | Query classification | No (falls back to RAG) |
 | Ollama | LLM inference (legacy) | No |
 
@@ -512,7 +504,6 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
 - **API Docs**: `/docs` (when enabled)
 - **Logs**: Structured logging with configurable levels
 - **Timing Metrics**: Included in SSE `timing` events
-- **Cache Stats**: Redis key inspection
 - **Profile Logging**: User profile updates logged
 
 ## Multi-language Architecture

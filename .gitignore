@@ -39,3 +39,4 @@ output/
 *.onnx
 
 temp_images/
+testing/

@@ -197,28 +197,7 @@ This document summarizes what user information is captured in this codebase and 
 - It is only sent to backend when user submits chat.
 - TTS plays assistant text locally in browser; no server TTS payload in this path.
 
-## 8) Response Cache Data
-
-### Data Stored
-
-- Cached assistant answer text
-- Metadata (`model`, params, system tag, context length, timestamp)
-
-### Where Stored
-
-- Redis key-value storage (`cache:<hash>`) via `app/utils/response_cache.py`
-
-### Key Material
-
-- Cache key hash includes normalized:
-  - user question text,
-  - system tag,
-  - model id,
-  - generation params,
-  - context hash,
-  - history scope hash.
-
-## 9) Data Sent To External/Internal Services
+## 8) Data Sent To External/Internal Services
 
 ### Django Backend (proxied)
 
@@ -247,4 +226,3 @@ This document summarizes what user information is captured in this codebase and 
 - Login email is written to application logs.
 - PDF extracted text is retained in memory and may be persisted to backend attachments.
 - This repo does not show explicit consent capture, data deletion workflows for chat/profile, or retention limits on backend-stored chat/profile data.
-

@@ -6,6 +6,5 @@ pydantic-settings==2.13.1
 pypdf==6.9.2
 python-dotenv==1.2.2
 python-multipart==0.0.22
-redis==7.4.0
 sse-starlette==3.3.4
 uvicorn==0.42.0
