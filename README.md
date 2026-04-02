@@ -59,7 +59,6 @@ Farm Assistant is a conversational AI designed to help farmers, researchers, and
    VLLM_URL=https://your-vllm-instance.com
    VLLM_MODEL=qwen3-30b-a3b-awq
    VLLM_API_KEY=your-api-key
-   VLLM_MAX_MODEL_LEN=131072
 
    # Environment (local/dev/prd)
    FA_ENV=local
@@ -91,6 +90,25 @@ The application will be available at `http://localhost:8000`.
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
    ```
 
+### Running With `run.sh`
+
+The project also includes a helper script:
+
+```bash
+./run.sh local
+```
+
+Useful variants:
+
+```bash
+./run.sh local        # local UI + backend values from .env
+./run.sh local dev    # local UI + dev Django backend
+./run.sh local prd    # local UI + prd Django backend
+./run.sh docker       # Docker Compose
+```
+
+When using `./run.sh local dev` or `./run.sh local prd`, the script keeps the FastAPI UI local on port `8000` and overrides the auth/chat backend targets at startup.
+
 ## Configuration
 
 All configuration is managed through environment variables or the `.env` file:
@@ -111,15 +129,7 @@ All configuration is managed through environment variables or the `.env` file:
 | `VLLM_URL` | vLLM API endpoint | `http://localhost:8000` |
 | `VLLM_MODEL` | Model identifier | `qwen3-30b-a3b-awq` |
 | `VLLM_API_KEY` | API key (if required) | `None` |
-| `VLLM_MAX_MODEL_LEN` | Max context length (tokens) | `131072` |
 | `RUNPOD_VLLM_HOST` | Alternative vLLM host | `None` |
-
-### Legacy Ollama Settings
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OLLAMA_URL` | Ollama API endpoint | `http://ollama:11434` |
-| `LLM_MODEL` | Default LLM model | `deepseek-llm:7b-chat-q5_K_M` |
 
 ### LLM Generation Settings
 
@@ -185,9 +195,6 @@ All configuration is managed through environment variables or the `.env` file:
 ### Summarization
 - `POST /summarise` - Summarize text with custom prompt
 
-### Text-to-Speech
-- `POST /tts/stream` - Stream audio from text (NDJSON input)
-
 ### Session Management (Proxy to Django)
 - `GET /proxy/chat/sessions/` - List user sessions
 - `POST /proxy/chat/sessions/` - Create new session
@@ -225,9 +232,7 @@ All configuration is managed through environment variables or the `.env` file:
 │   ├── clients/
 │   │   ├── __init__.py
 │   │   ├── vllm_client.py      # vLLM (OpenAI-compatible) client
-│   │   ├── ollama_client.py    # Ollama LLM client (legacy)
 │   │   ├── opensearch_client.py # OpenSearch client
-│   │   └── hf_local_client.py  # HuggingFace local model client
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── chat_history.py     # Session management
@@ -247,7 +252,6 @@ All configuration is managed through environment variables or the `.env` file:
 │       ├── auth.js             # Authentication handling
 │       ├── login.js            # Login page logic
 │       ├── chat.js             # Chat UI and streaming
-│       ├── tts.js              # TTS callbacks (legacy)
 │       └── voice.js            # Voice controls (TTS/STT)
 ├── models/                     # Piper TTS voice models
 ├── requirements.txt

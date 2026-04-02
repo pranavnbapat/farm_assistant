@@ -29,7 +29,8 @@ def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
         return None
 
 
-@router.post("/files/pdf")
+@router.post("/chatbot/api/files/pdf", tags=["Files"], summary="Upload a PDF for chat context")
+@router.post("/files/pdf", include_in_schema=False)
 async def upload_pdf(request: Request, file: UploadFile = File(...)):
     auth_token = request.headers.get("Authorization", "")
     owner_id = _extract_user_uuid_from_token(auth_token) if auth_token else None
@@ -55,7 +56,8 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)):
     }
 
 
-@router.delete("/files/pdf/{doc_id}")
+@router.delete("/chatbot/api/files/pdf/{doc_id}", tags=["Files"], summary="Delete an uploaded PDF")
+@router.delete("/files/pdf/{doc_id}", include_in_schema=False)
 async def delete_pdf(request: Request, doc_id: str):
     auth_token = request.headers.get("Authorization", "")
     owner_id = _extract_user_uuid_from_token(auth_token) if auth_token else None

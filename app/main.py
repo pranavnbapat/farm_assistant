@@ -1,12 +1,14 @@
 # app/main.py
 
 import asyncio
+import base64
+import json
 import logging
 import os
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import cast, Any
+from typing import cast, Any, Optional
 
 import httpx
 
@@ -21,7 +23,16 @@ from pydantic import BaseModel
 from app.config import get_settings
 from app.routers.ask import router as ask_router
 from app.routers.files import router as files_router
-from app.routers.tts import router as tts_router
+from app.schemas import (
+    ChatSessionCreateIn,
+    ChatSessionPatchIn,
+    ChatTurnLogIn,
+    LogoutIn,
+    UserFactCreateIn,
+    UserProfileBuildIn,
+    UserProfilePatchIn,
+)
+from app.services.user_profile_service import UserProfileService
 
 S = get_settings()
 
@@ -76,6 +87,55 @@ def _relay_upstream_response(upstream: httpx.Response) -> JSONResponse:
 
     return JSONResponse(content=body, status_code=upstream.status_code)
 
+
+def _chat_backend_headers(request: Request) -> dict[str, str]:
+    return {
+        "Authorization": request.headers.get("Authorization", ""),
+        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
+    }
+
+
+async def _proxy_json_request(
+    method: str,
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    json_body: Any = None,
+    params: Optional[dict[str, Any]] = None,
+) -> JSONResponse:
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
+            upstream = await client.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+                params=params,
+            )
+            return _relay_upstream_response(upstream)
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to proxy {method} {url}: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
+    if not auth_token.startswith("Bearer "):
+        return None
+    token = auth_token[7:]
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        token_data = json.loads(base64.urlsafe_b64decode(payload))
+        user_id = token_data.get("uuid") or token_data.get("user_id") or token_data.get("sub")
+        return str(user_id) if user_id else None
+    except Exception:
+        return None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     limit = int(os.getenv("MAX_ACTIVE_GENERATIONS", "3"))
@@ -120,22 +180,21 @@ async def health():
 
 # Mount feature routers
 app.include_router(ask_router)
-app.include_router(tts_router)
 app.include_router(files_router)
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def login_page():
     """Public login page."""
     return LOGIN_HTML.read_text(encoding="utf-8")
 
 
-@app.get("/chat", response_class=HTMLResponse)
+@app.get("/chat", response_class=HTMLResponse, include_in_schema=False)
 def chat_page(request: Request):
     """Chat UI – frontend will redirect to / if not logged in."""
     return templates.TemplateResponse(
-        "ask_stream.html",
-        {
-            "request": request,
+        request=request,
+        name="ask_stream.html",
+        context={
             "FA_ENV": S.FA_ENV,
         },
     )
@@ -146,7 +205,8 @@ class LoginBody(BaseModel):
     password: str
 
 
-@app.post("/api/login")
+@app.post("/chatbot/api/auth/login", tags=["Authentication"], summary="Authorize a user")
+@app.post("/api/login", include_in_schema=False)
 async def api_login(body: LoginBody):
     payload = {
         "email": body.email,
@@ -207,150 +267,181 @@ async def api_login(body: LoginBody):
 # Proxy endpoints for chat functionality (avoids CORS issues)
 # =========================
 
-@app.get("/proxy/chat/sessions/")
+@app.get("/chatbot/api/chats", tags=["Chats"], summary="Read Chats")
+@app.get("/proxy/chat/sessions/", include_in_schema=False)
 async def proxy_get_sessions(request: Request):
     """Proxy GET sessions request to Django backend."""
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/"
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.get(url, headers=headers)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy sessions: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    return await _proxy_json_request("GET", url, headers=_chat_backend_headers(request))
 
 
-@app.post("/proxy/chat/sessions/")
-async def proxy_create_session(request: Request):
-    """Proxy POST session request to Django backend."""
+@app.post("/chatbot/api/chats", tags=["Chats"], summary="Create Chat")
+async def api_create_session(body: ChatSessionCreateIn, request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
-    
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/"
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
-    }
-    body = await request.json()
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.post(url, json=body, headers=headers)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy create session: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump())
 
 
-@app.get("/proxy/chat/sessions/{session_id}/")
+@app.post("/proxy/chat/sessions/", include_in_schema=False)
+async def proxy_create_session(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/sessions/"
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
+
+
+@app.get("/chatbot/api/chats/{session_id}", tags=["Chats"], summary="Get a specific chat")
+@app.get("/proxy/chat/sessions/{session_id}/", include_in_schema=False)
 async def proxy_get_session(session_id: str, request: Request):
     """Proxy GET single session request to Django backend."""
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.get(url, headers=headers)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy get session: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    return await _proxy_json_request("GET", url, headers=_chat_backend_headers(request))
 
 
-@app.patch("/proxy/chat/sessions/{session_id}/")
-async def proxy_patch_session(session_id: str, request: Request):
-    """Proxy PATCH session request to Django backend (e.g., rename title)."""
+@app.patch("/chatbot/api/chats/{session_id}", tags=["Chats"], summary="Update chat metadata")
+async def api_patch_session(session_id: str, body: ChatSessionPatchIn, request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
-
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
-    }
-    body = await request.json()
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.patch(url, json=body, headers=headers)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy patch session: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    payload = body.model_dump(exclude_none=True)
+    return await _proxy_json_request("PATCH", url, headers=_chat_backend_headers(request), json_body=payload)
 
 
-@app.delete("/proxy/chat/sessions/{session_id}/")
+@app.patch("/proxy/chat/sessions/{session_id}/", include_in_schema=False)
+async def proxy_patch_session(session_id: str, request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
+    return await _proxy_json_request("PATCH", url, headers=_chat_backend_headers(request), json_body=await request.json())
+
+
+@app.delete("/chatbot/api/chats/{session_id}", tags=["Chats"], summary="Delete a specific chat")
+@app.delete("/proxy/chat/sessions/{session_id}/", include_in_schema=False)
 async def proxy_delete_session(session_id: str, request: Request):
     """Proxy DELETE session request to Django backend."""
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.delete(url, headers=headers)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy delete session: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    return await _proxy_json_request("DELETE", url, headers=_chat_backend_headers(request))
 
 
-@app.post("/proxy/chat/log-turn/")
-async def proxy_log_turn(request: Request):
-    """Proxy chat turn logging to Django backend."""
+@app.post("/chatbot/api/chats/log-turn", tags=["Chats"], summary="Store a completed chat turn")
+async def api_log_turn(body: ChatTurnLogIn, request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
-    
     url = f"{S.CHAT_BACKEND_URL}/chat/log-turn/"
-    headers = {
-        "Authorization": request.headers.get("Authorization", ""),
-        "X-Refresh-Token": request.headers.get("X-Refresh-Token", ""),
-    }
-    body = await request.json()
-    
     logger.info(f"Proxying chat log to {url}")
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.post(url, json=body, headers=headers)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy log turn: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump())
 
 
-@app.post("/proxy/logout/")
-async def proxy_logout(request: Request):
-    """Proxy logout request to Django backend."""
+@app.post("/chatbot/api/chats/{session_id}/log-turn", tags=["Chats"], summary="Store a completed chat turn for an existing chat")
+async def api_log_turn_for_session(session_id: str, body: ChatTurnLogIn, request: Request):
+    payload = body.model_dump()
+    payload["session_uuid"] = session_id
+    return await api_log_turn(ChatTurnLogIn(**payload), request)
+
+
+@app.post("/proxy/chat/log-turn/", include_in_schema=False)
+async def proxy_log_turn(request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
-    
+    url = f"{S.CHAT_BACKEND_URL}/chat/log-turn/"
+    logger.info(f"Proxying chat log to {url}")
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
+
+
+@app.get("/chatbot/api/users/me/profile", tags=["User Profile"], summary="Read the current user's profile")
+async def api_get_user_profile(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/profile/"
+    return await _proxy_json_request("GET", url, headers={"Authorization": request.headers.get("Authorization", "")})
+
+
+@app.patch("/chatbot/api/users/me/profile", tags=["User Profile"], summary="Update the current user's profile")
+async def api_patch_user_profile(body: UserProfilePatchIn, request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/profile/"
+    payload = body.model_dump(exclude_none=True)
+    return await _proxy_json_request(
+        "PATCH",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        json_body=payload,
+    )
+
+
+@app.get("/chatbot/api/users/me/facts", tags=["User Profile"], summary="Read the current user's stored facts")
+async def api_get_user_facts(request: Request, category: Optional[str] = None, limit: int = 10):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/facts/"
+    params: dict[str, Any] = {"limit": limit}
+    if category:
+        params["category"] = category
+    return await _proxy_json_request(
+        "GET",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        params=params,
+    )
+
+
+@app.post("/chatbot/api/users/me/facts", tags=["User Profile"], summary="Add a fact for the current user")
+async def api_add_user_fact(body: UserFactCreateIn, request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/facts/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        json_body=body.model_dump(),
+    )
+
+
+@app.post("/chatbot/api/users/me/profile/build", tags=["User Profile"], summary="Build or update the current user's profile from a conversation turn")
+async def api_build_user_profile(body: UserProfileBuildIn, request: Request):
+    auth_token = request.headers.get("Authorization", "")
+    user_uuid = _extract_user_uuid_from_token(auth_token) if auth_token else None
+    if not user_uuid:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+    await UserProfileService.process_conversation_turn(
+        user_uuid=user_uuid,
+        session_uuid=body.session_uuid,
+        user_message=body.user_message,
+        assistant_message=body.assistant_message,
+        auth_token=auth_token,
+    )
+    return {
+        "status": "accepted",
+        "message": "Profile build/update request completed",
+        "user_uuid": user_uuid,
+        "session_uuid": body.session_uuid,
+    }
+
+
+@app.post("/chatbot/api/auth/logout", tags=["Authentication"], summary="Logout the current user")
+async def api_logout(body: LogoutIn):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/fastapi/logout/"
-    body = await request.json()
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
-            upstream = await client.post(url, json=body)
-            return _relay_upstream_response(upstream)
-    except httpx.HTTPError as e:
-        logger.error(f"Failed to proxy logout: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    return await _proxy_json_request("POST", url, json_body=body.model_dump())
+
+
+@app.post("/proxy/logout/", include_in_schema=False)
+async def proxy_logout(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/fastapi/logout/"
+    return await _proxy_json_request("POST", url, json_body=await request.json())

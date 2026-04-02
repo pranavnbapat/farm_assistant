@@ -65,6 +65,57 @@ def build_prompt(
     return "\n".join(parts)
 
 
+def build_history_only_prompt(
+    question: str,
+    history: Optional[str] = None,
+    user_profile_context: Optional[str] = None,
+) -> str:
+    """
+    Build a prompt that answers strictly from conversation history.
+    Used for recap/meta turns so the assistant does not invent topic summaries
+    from external retrieval when the user is asking about the conversation itself.
+    """
+    parts = []
+
+    parts.append(
+        "You are an agricultural assistant for EU-FarmBook. "
+        "The user is asking about the conversation itself. "
+        "Answer strictly from the Previous Conversation section below."
+    )
+
+    parts.append(
+        "Do not use outside knowledge, retrieved sources, or general agricultural background "
+        "to fill gaps. If the previous conversation does not contain the requested information, "
+        "say that plainly."
+    )
+
+    parts.append(
+        "Language rule: respond in the same language as the user's latest message, "
+        "unless the user explicitly asks for a different language."
+    )
+
+    parts.append(
+        "Be concrete, brief, and faithful to what was actually said. "
+        "End the response with one short, helpful follow-up question."
+    )
+
+    if user_profile_context:
+        parts.append(f"\nUser Profile:\n{user_profile_context}")
+
+    if history:
+        parts.append(f"\nPrevious Conversation:\n{history}")
+    else:
+        parts.append(
+            "\nPrevious Conversation:\n"
+            "No earlier conversation is available in the current session context."
+        )
+
+    parts.append(f"\nUser: {question}")
+    parts.append("\nAssistant:")
+
+    return "\n".join(parts)
+
+
 def build_summary_prompt(user_prompt: str, text: str) -> str:
     """Keep user's custom prompt authoritative."""
     from app.config import get_settings

@@ -18,7 +18,13 @@ from sse_starlette.sse import EventSourceResponse
 from app.clients.vllm_client import generate_once, stream_generate
 from app.clients.opensearch_client import os_async_client, os_headers, os_auth
 from app.config import get_settings
-from app.services.chat_history import load_chat_state, format_history, save_chat_state, CHAT_BACKEND_URL
+from app.services.chat_history import (
+    load_chat_state,
+    format_history,
+    merge_messages,
+    save_chat_state,
+    CHAT_BACKEND_URL,
+)
 from app.services.context_service import build_context_and_sources
 from app.services.pdf_service import (
     get_docs_for_user,
@@ -28,10 +34,15 @@ from app.services.pdf_service import (
     fetch_session_attachments_from_backend,
     docs_from_attachment_records,
 )
-from app.services.prompt_service import build_prompt, build_summary_prompt, build_title_prompt
+from app.services.prompt_service import (
+    build_prompt,
+    build_history_only_prompt,
+    build_summary_prompt,
+    build_title_prompt,
+)
 from app.services.search_service import build_search_payload, collect_os_items
 from app.services.user_profile_service import UserProfileService
-from app.schemas import AskIn, SummariseIn, SummariseOut
+from app.schemas import AskIn, ChatMessageStreamIn, SummariseIn, SummariseOut
 from app.utils.response_cache import make_key, get_cached, set_cached, hash_contexts
 
 logger = logging.getLogger("farm-assistant.router")
@@ -88,6 +99,42 @@ def _history_scope(history_text: str) -> str:
     if not history_text:
         return ""
     return hashlib.sha256(history_text.encode("utf-8")).hexdigest()[:16]
+
+
+async def _decide_turn_strategy(question: str, history_text: str) -> str:
+    """
+    Use the model to decide whether the current turn should be answered strictly
+    from conversation history or follow the normal retrieval flow.
+    This keeps the routing behavior dynamic instead of hardcoding keyword rules.
+    """
+    prompt = (
+        "You are routing a chat turn for an agricultural assistant.\n"
+        "Choose one mode and return JSON only.\n\n"
+        "Modes:\n"
+        '- "history_only": the user is asking about the conversation itself, prior turns, '
+        "what has been discussed, a recap, or what the assistant/user said earlier. "
+        "The answer should come strictly from chat history, and if history is missing the assistant "
+        "should say so honestly.\n"
+        '- "normal": use the standard retrieval-and-conversation flow.\n\n'
+        f"User message:\n{question}\n\n"
+        "Previous Conversation:\n"
+        f"{history_text or 'No earlier conversation is available.'}\n\n"
+        'Return exactly: {"mode":"history_only"} or {"mode":"normal"}'
+    )
+    try:
+        raw = await asyncio.wait_for(
+            generate_once(prompt, temperature=0.0, max_tokens=24),
+            timeout=1.5,
+        )
+        match = _re.search(r"\{.*?\}", raw or "", flags=_re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            mode = (data.get("mode") or "").strip().lower()
+            if mode in {"history_only", "normal"}:
+                return mode
+    except Exception:
+        pass
+    return "normal"
 
 
 SYSTEM_PROMPT_TAG = "farm-assistant-v2"
@@ -254,7 +301,9 @@ async def _maybe_update_session_title(
             pass
 
 
-@router.get("/ask/stream")
+@router.get("/chatbot/api/chats/message/stream", tags=["Chats"], summary="Stream a message without an existing chat")
+@router.get("/chatbot/api/chats/{session_id}/message/stream", tags=["Chats"], summary="Stream a message for an existing chat")
+@router.get("/ask/stream", include_in_schema=False)
 async def ask_stream(
     q: str,
     page: int = 1,
@@ -266,6 +315,7 @@ async def ask_stream(
     session_id: Optional[str] = None,
     followup_hint: Optional[str] = None,
     doc_ids: Optional[str] = None,
+    client_history: Optional[str] = None,
     request: Request = None,
 ):
     """
@@ -315,10 +365,22 @@ async def ask_stream(
         # Load conversation state
         history_text: str = ""
         initial_llm_ctx: list[int] | None = None
+        client_messages: list[dict] = []
+
+        if client_history:
+            try:
+                parsed = json.loads(client_history)
+                if isinstance(parsed, list):
+                    client_messages = parsed
+            except Exception:
+                client_messages = []
 
         state = {"messages": [], "llm_context": None}
         if session_id:
             state = await load_chat_state(session_id, auth_token)
+
+        merged_messages = merge_messages(state.get("messages", []), client_messages)
+        state["messages"] = merged_messages
 
         history_text = format_history(state.get("messages", []))
         initial_llm_ctx = state.get("llm_context")
@@ -355,6 +417,8 @@ async def ask_stream(
             except Exception as e:
                 logger.warning(f"Failed to load user profile: {e}")
 
+        turn_strategy = await _decide_turn_strategy(prompt_q, history_text)
+
         # Concurrency gate
         sem = getattr(request.app.state, "gen_semaphore", None)
 
@@ -373,10 +437,6 @@ async def ask_stream(
             except Exception:
                 pass
 
-        # --- Always search - let the LLM decide if results are useful ---
-        async for x in emit("status", {"stage": "Search", "message": "Searching sources..."}):
-            yield x
-
         inp = AskIn(
             question=retrieval_q,
             page=page,
@@ -385,94 +445,107 @@ async def ask_stream(
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        search_payload = build_search_payload(inp)
-        headers = os_headers()
-        auth = os_auth()
-        last_page = inp.page if (inp.page is not None and inp.page >= 1) else 1
-        pages = list(range(1, last_page + 1))
-
+        contexts: list[str] = []
+        sources: list = []
         t_search_start = time.perf_counter()
+        t_search_end = t_search_start
+        t_ctx_start = t_search_start
+        t_ctx_end = t_search_start
 
-        try:
-            async with os_async_client(timeout=30.0) as client:
-                items = await collect_os_items(client, search_payload, pages, headers, auth)
-        except httpx.HTTPStatusError as e:
-            body = (e.response.text or "")[:400]
-            async for x in emit_app_error({"stage": "search", "status": e.response.status_code, "body": body}):
+        if turn_strategy == "history_only":
+            async for x in emit("status", {"stage": "History", "message": "Answering from conversation history..."}):
                 yield x
-            return
+        else:
+            # --- Normal retrieval flow ---
+            async for x in emit("status", {"stage": "Search", "message": "Searching sources..."}):
+                yield x
 
-        t_search_end = time.perf_counter()
+            search_payload = build_search_payload(inp)
+            headers = os_headers()
+            auth = os_auth()
+            last_page = inp.page if (inp.page is not None and inp.page >= 1) else 1
+            pages = list(range(1, last_page + 1))
 
-        # --- Build contexts ---
-        async for x in emit("status", {"stage": "Context", "message": "Preparing context..."}):
-            yield x
+            t_search_start = time.perf_counter()
 
-        t_ctx_start = time.perf_counter()
-        t_k = inp.top_k if inp.top_k is not None else S.TOP_K
-        contexts, sources = build_context_and_sources(
-            items=items, question=retrieval_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
-        )
-
-        # Merge uploaded PDF contexts (if provided)
-        if requested_doc_ids:
-            owner_scope = user_uuid or "anonymous"
-            pdf_docs = get_docs_for_user(requested_doc_ids, owner_scope)
-            if pdf_docs:
-                async for x in emit("status", {"stage": "PDF", "message": "Extracting uploaded PDF(s)..."}):
+            try:
+                async with os_async_client(timeout=30.0) as client:
+                    items = await collect_os_items(client, search_payload, pages, headers, auth)
+            except httpx.HTTPStatusError as e:
+                body = (e.response.text or "")[:400]
+                async for x in emit_app_error({"stage": "search", "status": e.response.status_code, "body": body}):
                     yield x
-                for d in pdf_docs:
-                    await ensure_pdf_processed(d)
-                    if session_id and auth_token:
-                        asyncio.create_task(
-                            upsert_attachment_to_backend(
-                                chat_backend_url=CHAT_BACKEND_URL,
-                                verify_ssl=S.VERIFY_SSL,
-                                auth_token=auth_token,
-                                session_uuid=session_id,
-                                doc=d,
-                            )
-                        )
-                remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
-                pdf_contexts, pdf_sources = build_pdf_contexts(
-                    pdf_docs, question=retrieval_q, max_total_chars=remaining
-                )
-                contexts.extend(pdf_contexts)
-                # Add as source-like entries to include in citation mapping
-                for s in pdf_sources:
-                    sources.append(type("PdfSrc", (), {
-                        "sid": None,
-                        "id": s.get("id"),
-                        "title": s.get("title"),
-                        "display_url": None,
-                        "url": None,
-                        "license": None,
-                    })())
-        elif session_id and auth_token and _mentions_file_or_document(user_q):
-            # Fallback to persisted attachment summaries/text from Django for session continuity.
-            records = await fetch_session_attachments_from_backend(
-                chat_backend_url=CHAT_BACKEND_URL,
-                verify_ssl=S.VERIFY_SSL,
-                auth_token=auth_token,
-                session_uuid=session_id,
+                return
+
+            t_search_end = time.perf_counter()
+
+            # --- Build contexts ---
+            async for x in emit("status", {"stage": "Context", "message": "Preparing context..."}):
+                yield x
+
+            t_ctx_start = time.perf_counter()
+            t_k = inp.top_k if inp.top_k is not None else S.TOP_K
+            contexts, sources = build_context_and_sources(
+                items=items, question=retrieval_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
             )
-            if records:
-                persisted_docs = docs_from_attachment_records(records, owner_id=(user_uuid or "persisted"))
-                remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
-                pdf_contexts, pdf_sources = build_pdf_contexts(
-                    persisted_docs, question=retrieval_q, max_total_chars=remaining
+
+            # Merge uploaded PDF contexts (if provided)
+            if requested_doc_ids:
+                owner_scope = user_uuid or "anonymous"
+                pdf_docs = get_docs_for_user(requested_doc_ids, owner_scope)
+                if pdf_docs:
+                    async for x in emit("status", {"stage": "PDF", "message": "Extracting uploaded PDF(s)..."}):
+                        yield x
+                    for d in pdf_docs:
+                        await ensure_pdf_processed(d)
+                        if session_id and auth_token:
+                            asyncio.create_task(
+                                upsert_attachment_to_backend(
+                                    chat_backend_url=CHAT_BACKEND_URL,
+                                    verify_ssl=S.VERIFY_SSL,
+                                    auth_token=auth_token,
+                                    session_uuid=session_id,
+                                    doc=d,
+                                )
+                            )
+                    remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
+                    pdf_contexts, pdf_sources = build_pdf_contexts(
+                        pdf_docs, question=retrieval_q, max_total_chars=remaining
+                    )
+                    contexts.extend(pdf_contexts)
+                    for s in pdf_sources:
+                        sources.append(type("PdfSrc", (), {
+                            "sid": None,
+                            "id": s.get("id"),
+                            "title": s.get("title"),
+                            "display_url": None,
+                            "url": None,
+                            "license": None,
+                        })())
+            elif session_id and auth_token and _mentions_file_or_document(user_q):
+                records = await fetch_session_attachments_from_backend(
+                    chat_backend_url=CHAT_BACKEND_URL,
+                    verify_ssl=S.VERIFY_SSL,
+                    auth_token=auth_token,
+                    session_uuid=session_id,
                 )
-                contexts.extend(pdf_contexts)
-                for s in pdf_sources:
-                    sources.append(type("PdfSrc", (), {
-                        "sid": None,
-                        "id": s.get("id"),
-                        "title": s.get("title"),
-                        "display_url": None,
-                        "url": None,
-                        "license": None,
-                    })())
-        t_ctx_end = time.perf_counter()
+                if records:
+                    persisted_docs = docs_from_attachment_records(records, owner_id=(user_uuid or "persisted"))
+                    remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
+                    pdf_contexts, pdf_sources = build_pdf_contexts(
+                        persisted_docs, question=retrieval_q, max_total_chars=remaining
+                    )
+                    contexts.extend(pdf_contexts)
+                    for s in pdf_sources:
+                        sources.append(type("PdfSrc", (), {
+                            "sid": None,
+                            "id": s.get("id"),
+                            "title": s.get("title"),
+                            "display_url": None,
+                            "url": None,
+                            "license": None,
+                        })())
+            t_ctx_end = time.perf_counter()
 
         all_sources = [
             {
@@ -492,12 +565,19 @@ async def ask_stream(
             _max_tokens = S.MAX_OUTPUT_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
-        prompt = build_prompt(
-            contexts=contexts if contexts else [],
-            question=prompt_q,
-            history=history_text,
-            user_profile_context=profile_context
-        )
+        if turn_strategy == "history_only":
+            prompt = build_history_only_prompt(
+                question=prompt_q,
+                history=history_text,
+                user_profile_context=profile_context,
+            )
+        else:
+            prompt = build_prompt(
+                contexts=contexts if contexts else [],
+                question=prompt_q,
+                history=history_text,
+                user_profile_context=profile_context,
+            )
         prompt_tokens = _estimate_tokens(prompt)
         prompt_cap = min(
             S.MAX_INPUT_TOKENS,
@@ -520,7 +600,7 @@ async def ask_stream(
 
         ckey = make_key(
             user_q=prompt_q,
-            system_tag=SYSTEM_PROMPT_TAG,
+            system_tag=f"{SYSTEM_PROMPT_TAG}:{turn_strategy}",
             model_id=params["model"],
             params=params,
             ctx_hash=ctx_h,
@@ -672,6 +752,47 @@ async def ask_stream(
     return EventSourceResponse(gen(), ping=10)
 
 
+@router.post("/chatbot/api/chats/message", tags=["Chats"], summary="Send a message without an existing chat")
+async def chat_message_stream_create(
+    body: ChatMessageStreamIn,
+    request: Request,
+):
+    return await ask_stream(
+        q=body.q,
+        page=body.page,
+        k=body.k,
+        top_k=body.top_k,
+        max_tokens=body.max_tokens,
+        temperature=body.temperature,
+        model=body.model,
+        session_id=None,
+        followup_hint=body.followup_hint,
+        doc_ids=",".join(body.doc_ids),
+        request=request,
+    )
+
+
+@router.post("/chatbot/api/chats/{session_id}/message", tags=["Chats"], summary="Send a message to an existing chat")
+async def chat_message_stream_existing(
+    session_id: str,
+    body: ChatMessageStreamIn,
+    request: Request,
+):
+    return await ask_stream(
+        q=body.q,
+        page=body.page,
+        k=body.k,
+        top_k=body.top_k,
+        max_tokens=body.max_tokens,
+        temperature=body.temperature,
+        model=body.model,
+        session_id=session_id,
+        followup_hint=body.followup_hint,
+        doc_ids=",".join(body.doc_ids),
+        request=request,
+    )
+
+
 @router.post("/summarise", response_model=SummariseOut)
 async def summarise(inp: SummariseIn) -> SummariseOut:
     """Summarise a single text chunk according to a user-supplied prompt."""
@@ -704,7 +825,7 @@ async def summarise(inp: SummariseIn) -> SummariseOut:
     return SummariseOut(
         summary=summary,
         meta={
-            "model": S.LLM_MODEL,
+            "model": S.VLLM_MODEL,
             "num_ctx": S.NUM_CTX,
             "max_tokens": max_tokens,
             "temperature": temperature,

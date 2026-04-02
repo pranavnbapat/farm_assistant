@@ -970,6 +970,43 @@ function getAttachedFileNames() {
     return names;
 }
 
+function collectClientHistoryForRequest() {
+    const MAX_MESSAGES = 12;
+    const MAX_TOTAL_CHARS = 6000;
+    if (!chat) return [];
+
+    const rows = Array.from(chat.querySelectorAll('.msg'));
+    const messages = [];
+
+    for (const row of rows) {
+        const role = row.classList.contains('you')
+            ? 'user'
+            : row.classList.contains('assistant')
+                ? 'assistant'
+                : null;
+        if (!role) continue;
+
+        const bubble = row.querySelector('.bubble');
+        const content = (bubble?.textContent || '').trim();
+        if (!content) continue;
+
+        messages.push({ role, content });
+    }
+
+    const recent = messages.slice(-MAX_MESSAGES);
+    let totalChars = 0;
+    const bounded = [];
+
+    for (let i = recent.length - 1; i >= 0; i -= 1) {
+        const msg = recent[i];
+        if (totalChars + msg.content.length > MAX_TOTAL_CHARS) break;
+        bounded.push(msg);
+        totalChars += msg.content.length;
+    }
+
+    return bounded.reverse();
+}
+
 function startStream(q) {
     if (es) {
         es.close();
@@ -1018,6 +1055,10 @@ function startStream(q) {
     }
     if (isShortAffirmation(q) && lastAssistantFollowupQuestion) {
         params.append('followup_hint', lastAssistantFollowupQuestion);
+    }
+    const clientHistory = collectClientHistoryForRequest();
+    if (clientHistory.length) {
+        params.append('client_history', JSON.stringify(clientHistory));
     }
 
     // Add auth token as query param since SSE doesn't support custom headers

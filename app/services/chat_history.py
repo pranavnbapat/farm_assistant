@@ -1,7 +1,7 @@
 # app/services/chat_history.py
 
-import httpx
 import logging
+import httpx
 
 from typing import Optional
 
@@ -95,3 +95,53 @@ def format_history(messages: list[dict], max_chars: int = 4000) -> str:
 
     buf.reverse()
     return "\n".join(buf)
+
+
+def merge_messages(
+    backend_messages: list[dict] | None,
+    client_messages: list[dict] | None,
+) -> list[dict]:
+    """
+    Merge persisted session messages with recent client-side messages.
+    This avoids losing the latest turns when backend persistence is slightly behind.
+
+    Strategy:
+    - Keep backend history as the stable base.
+    - Append only client messages not already present in-order near the tail.
+    - Compare on `(role, content)` because that is what prompt/history construction uses.
+    """
+    merged = [m for m in (backend_messages or []) if isinstance(m, dict)]
+    recent = [m for m in (client_messages or []) if isinstance(m, dict)]
+    if not recent:
+        return merged
+
+    existing_pairs = [
+        (
+            (m.get("role") or "user").strip().lower(),
+            (m.get("content") or "").strip(),
+        )
+        for m in merged
+        if (m.get("content") or "").strip()
+    ]
+
+    scan_start = 0
+    for msg in recent:
+        role = (msg.get("role") or "user").strip().lower()
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        pair = (role, content)
+        found_at = -1
+        for idx in range(scan_start, len(existing_pairs)):
+            if existing_pairs[idx] == pair:
+                found_at = idx
+                break
+        if found_at >= 0:
+            scan_start = found_at + 1
+            continue
+
+        merged.append({"role": role, "content": content})
+        existing_pairs.append(pair)
+        scan_start = len(existing_pairs)
+
+    return merged

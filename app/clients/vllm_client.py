@@ -74,7 +74,7 @@ async def generate_once(
 ) -> str:
     """
     Non-streaming one-shot generation.
-    Compatible with ollama_client.generate_once interface.
+    Keeps the older client signature for router compatibility.
     """
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=1800.0, pool=None)
     url = f"{S.VLLM_URL}/v1/chat/completions"
@@ -110,7 +110,7 @@ async def stream_generate(
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streaming generation using Server-Sent Events.
-    Compatible with ollama_client.stream_generate interface.
+    Keeps the older client signature for router compatibility.
     Yields dicts with 'response' for tokens and 'done' when complete.
     """
     timeout = httpx.Timeout(connect=30.0, read=3600.0, write=300.0, pool=None)

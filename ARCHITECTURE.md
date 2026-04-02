@@ -226,14 +226,7 @@ Key parameters:
 }
 ```
 
-**Note**: vLLM uses the OpenAI chat completions format (`/v1/chat/completions`) rather than Ollama's generate endpoint.
-
-#### Ollama Client (`app/clients/ollama_client.py`)
-
-Legacy LLM interface (kept for backward compatibility):
-- **Local inference**: Runs models locally via Ollama
-- **KV cache reuse**: Supports context passing for multi-turn conversations
-- **Compatible interface**: Same `generate_once()` and `stream_generate()` signatures
+**Note**: vLLM uses the OpenAI chat completions format (`/v1/chat/completions`).
 
 #### OpenSearch Client (`app/clients/opensearch_client.py`)
 
@@ -444,11 +437,7 @@ class Settings(BaseSettings):
     VLLM_URL: str
     VLLM_MODEL: str
     VLLM_API_KEY: str | None
-    
-    # Legacy Ollama
-    OLLAMA_URL: str
-    LLM_MODEL: str
-    
+
     # Feature flags
     ENABLE_DOCS: bool
     ENABLE_REDOC: bool
