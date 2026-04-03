@@ -1341,9 +1341,9 @@ function setStatus(text, thinking = false) {
 function renderSourcesInline(container, items) {
     if (!items || !items.length) return;
 
-    const title = document.createElement('div');
-    title.className = 'sources-title';
-    title.textContent = 'References';
+    if (DEBUG) {
+        console.log('Rendering sources:', JSON.stringify(items, null, 2));
+    }
 
     const ul = document.createElement('ul');
     ul.className = 'sources-list';
@@ -1351,23 +1351,71 @@ function renderSourcesInline(container, items) {
     items.forEach(s => {
         const li = document.createElement('li');
 
-        const sup = document.createElement('sup');
-        sup.className = 'cite';
-        sup.textContent = String(s.n || '?') + ' ';
-        li.appendChild(sup);
-
         const a = document.createElement('a');
-        a.href = s.url || '#';
-        a.textContent = s.title || s.id || s.url || '(untitled)';
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        li.appendChild(a);
+        const href = s.url || s.display_url || '#';
+        a.href = href;
+        if (href !== '#') {
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+        }
 
+        // Build label: prefer title, then project, then derive from URL, then clean up id
+        // Note: sid (e.g. "S1") is intentionally NOT used as a label - it's just a reference marker
+        let label = '';
+
+        // 1) Use title if it's a meaningful non-empty string
+        if (s.title && s.title.trim() && s.title.trim() !== s.id) {
+            label = s.title.trim();
+        }
+        // 2) Use project name (e.g. "NETPOULSAFE (Horizon 2020)")
+        else if (s.project && s.project.trim()) {
+            label = s.project.trim();
+        }
+        // 3) Derive from URL domain
+        else if (s.url || s.display_url) {
+            try {
+                const domain = new URL(href).hostname.replace(/^www\./, '');
+                label = domain;
+            } catch {
+                // fall through
+            }
+        }
+
+        // 4) Fall back to a cleaned-up id or sid
+        if (!label) {
+            // If we have a sid (like "S1"), use it with a descriptive fallback
+            if (s.sid) {
+                label = 'Source ' + s.sid;
+            } else if (s.id) {
+                // Extract last meaningful segment from S3-like keys
+                // e.g. "bucket/path/to/doc-name.pdf" -> "doc-name.pdf"
+                const idStr = String(s.id);
+                const segments = idStr.split(/[\/\\]/);
+                const lastSegment = segments[segments.length - 1];
+                if (lastSegment) {
+                    // Remove file extension for cleaner display
+                    label = lastSegment.replace(/\.[^.]+$/, '');
+                    // If still too long, take first meaningful part
+                    if (label.length > 28) {
+                        label = label.slice(0, 25) + '…';
+                    }
+                } else {
+                    label = idStr.slice(0, 25) + '…';
+                }
+            }
+        }
+
+        if (!label) label = 'source';
+
+        a.textContent = label;
+        // Show full title/project/id on hover
+        const tooltip = s.title || s.project || s.id || '';
+        if (tooltip) a.title = tooltip;
+        li.appendChild(a);
         ul.appendChild(li);
     });
 
     const holder = document.createElement('div');
-    holder.appendChild(title);
     holder.appendChild(ul);
     answerNode.parentElement.appendChild(holder);
 }
@@ -1592,6 +1640,9 @@ function startStream(q) {
             const parsed = JSON.parse(e.data);
             // null or empty array means explicitly clear sources
             pendingSources = parsed || [];
+            if (DEBUG && pendingSources.length) {
+                console.log('Received sources:', JSON.stringify(pendingSources, null, 2));
+            }
         } catch {
             pendingSources = [];
         }

@@ -538,25 +538,82 @@ h1 {
 }
 
 /* ===========================
-   Sources
+   Sources (inline reference chips)
    =========================== */
 
 .sources-title {
-    margin: 12px 0 6px;
+    margin: 12px 0 8px;
     font-size: 12px;
     color: var(--text-muted);
     font-weight: 500;
+    max-width: var(--chat-max-width);
+    margin-left: 20%;
 }
 
 .sources-list {
-    margin: 0;
-    padding-left: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 12px;
+    max-width: var(--chat-max-width);
+    margin-left: 20%;
+    padding: 0;
+    list-style: none;
 }
 
 .sources-list li {
-    margin: 3px 0;
-    font-size: 13px;
+    margin: 0;
+    font-size: 12px;
+    line-height: 1;
+}
+
+.sources-list li .cite {
+    display: none;
+}
+
+.sources-list li a {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
     color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 12px;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sources-list li a:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--border-color-hover);
+}
+
+.sources-list li a .source-label {
+    font-weight: 500;
+    color: var(--text-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.sources-list li a .source-domain {
+    opacity: 0.6;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+sup.cite {
+    font-size: 0.7em;
+    line-height: 0;
+    vertical-align: super;
+    opacity: 0.65;
+    cursor: pointer;
 }
 
 /* ===========================
@@ -905,13 +962,6 @@ button:hover {
 /* ===========================
    Citations
    =========================== */
-
-sup.cite {
-    font-size: 0.72em;
-    line-height: 0;
-    vertical-align: super;
-    opacity: 0.7;
-}
 
 /* ===========================
    Voice Controls

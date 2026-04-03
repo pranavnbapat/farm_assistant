@@ -4,7 +4,7 @@ This document captures the current token-budget and concurrency picture for the 
 
 - the FastAPI app configuration in this repository
 - the current `.env` values used by the app
-- the vLLM supervisor configuration provided for the model server
+- a private vLLM runtime configuration used for the text model server
 
 It is intended as an operational planning note, not a theoretical model card.
 
@@ -29,15 +29,14 @@ From code:
 
 ### vLLM Server Settings
 
-From the provided `supervisord.conf`:
+From the private runtime configuration used for the vLLM text server:
 
-- model: `stelterlab/Qwen3-30B-A3B-Instruct-2507-AWQ`
+- model class: `Qwen3 30B`
 - GPU: `A40 48 GB`
 - `--gpu-memory-utilization 0.80`
 - `--max-model-len 65536`
 - `--max-num-seqs 1`
 - `--max-num-batched-tokens 65536`
-- `CUDA_VISIBLE_DEVICES=0`
 
 ## What The App Actually Allows Per Chat Request
 
@@ -235,7 +234,7 @@ So if your question is "how many users can we serve in parallel right now?", the
 Server inputs provided:
 
 - GPU: `A40 48 GB`
-- model: `Qwen3-30B-A3B-Instruct-2507-AWQ`
+- model class: `Qwen3 30B`
 - current vLLM:
   - `--gpu-memory-utilization 0.80`
   - `--max-model-len 65536`
@@ -346,8 +345,11 @@ It takes:
 - `max-num-seqs`
 - `max-num-batched-tokens`
 - target active users
+- preferred Farm Assistant working context (`NUM_CTX`)
 - desired output-token cap
 - desired user-input cap
+- preferred retrieval depth (`TOP_K`)
+- preferred retrieved-context payload size (`MAX_CONTEXT_CHARS`)
 
 and produces:
 
@@ -367,6 +369,44 @@ python3 testing/calculate_capacity.py \
   --vllm-max-num-batched-tokens 65536 \
   --target-active-users 1
 ```
+
+### Interactive Guided Mode
+
+If you run the planner without `--target-active-users`, it now starts in guided mode and asks step by step for:
+
+- how many active generations you want to target
+- current vLLM limits
+- preferred Farm Assistant working context (`NUM_CTX`)
+- desired max output tokens
+- desired max user-input tokens
+- desired retrieval depth (`TOP_K`)
+- desired retrieved-context payload size (`MAX_CONTEXT_CHARS`)
+
+Example:
+
+```bash
+python3 testing/calculate_capacity.py
+```
+
+or explicitly:
+
+```bash
+python3 testing/calculate_capacity.py --interactive
+```
+
+### Note On `TOP_K`
+
+`TOP_K` is the retrieval depth used by the app when it pulls context from the search layer.
+
+So if you say:
+
+- "right now we give top 5 KOs"
+
+that maps most closely to:
+
+- `TOP_K=5`
+
+The planner can now keep this automatic or let you override it explicitly.
 
 ### Example: Planning For 2 Active Users
 

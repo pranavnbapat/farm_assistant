@@ -605,7 +605,9 @@ async def ask_stream(
                 "sid": getattr(s, "sid", None),
                 "id": getattr(s, "id", None),
                 "title": getattr(s, "title", None),
+                "project": getattr(s, "project", None),
                 "url": (getattr(s, "display_url", None) or getattr(s, "url", None)),
+                "display_url": getattr(s, "display_url", None),
                 "license": getattr(s, "license", None),
             }
             for i, s in enumerate(sources)
@@ -737,15 +739,19 @@ async def ask_stream(
                 )
             )
 
-        # Extract citations
+        # Extract citations - handle formats like [1], [S1], [1, 2, 3], [S1, S3], (source: [1]), etc.
         norm_text = _re.sub(r"\(\s*source[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\s*\)", r"[\1]", full_text, flags=_re.IGNORECASE)
         norm_text = _re.sub(r"\bsource[s]?:?\s*\[?\s*(?:S)?(\d+)\s*\]?\b", r"[\1]", norm_text, flags=_re.IGNORECASE)
+        # Convert [S1] -> [1], (S1) -> [1]
         norm_text = _re.sub(r"\[\s*[sS](\d+)\s*\]", r"[\1]", norm_text)
         norm_text = _re.sub(r"\(\s*[sS](\d+)\s*\)", r"[\1]", norm_text)
+        # Handle comma-separated S-prefixed lists like [S1, S3, S4, S5] -> [1, 3, 4, 5]
+        norm_text = _re.sub(r"\[\s*([sS]\d+(?:\s*[,–-]\s*[sS]?\d+)*)\s*\]", lambda m: "[" + _re.sub(r"[sS]", "", m.group(1)) + "]", norm_text)
 
         cited_nums = set()
         for m in _re.finditer(r"\[\s*(\d+)\s*\]", norm_text):
             cited_nums.add(int(m.group(1)))
+        # Also handle bracketed lists like [1, 2, 3]
         for m in _re.finditer(r"\[\s*([\d\s,–-]+)\s*\]", norm_text):
             for tok in _re.split(r"[,\s–-]+", m.group(1)):
                 if tok.isdigit():

@@ -85,7 +85,9 @@ def build_context_and_sources(
 
         sources.append(SourceItem(
             id=_id, url=url, display_url=nice_url,
-            title=title or None, score=_score,
+            # Use title if available, otherwise fall back to project name or subtitle
+            title=(title or proj_str or subtitle or None),
+            score=_score,
             subtitle=subtitle or None,
             description=(desc[:300] if desc else None),
             project=(proj_str or None),
