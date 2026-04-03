@@ -64,14 +64,27 @@ function getDisplayNameFromToken(token, fallbackEmail) {
     }
 }
 
-// Put "Welcome {first_name}" + email in the header
-const chatUserNameSpan = document.getElementById("chat-user-name");
-if (chatUserNameSpan) {
-    chatUserNameSpan.textContent = getDisplayNameFromToken(authToken, authEmail);
+// Put user name + email in the sidebar footer
+const sidebarUserNameSpan = document.getElementById("sidebar-user-name");
+if (sidebarUserNameSpan) {
+    sidebarUserNameSpan.textContent = getDisplayNameFromToken(authToken, authEmail);
 }
-const chatUserEmailSpan = document.getElementById("chat-user-email");
-if (chatUserEmailSpan && authEmail) {
-    chatUserEmailSpan.textContent = authEmail;
+const sidebarUserEmailSpan = document.getElementById("sidebar-user-email");
+if (sidebarUserEmailSpan && authEmail) {
+    sidebarUserEmailSpan.textContent = authEmail;
+}
+
+// Set user avatar initials
+const userAvatarEl = document.getElementById("user-avatar");
+if (userAvatarEl) {
+    const displayName = getDisplayNameFromToken(authToken, authEmail);
+    const initials = displayName
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(n => n[0].toUpperCase())
+        .slice(0, 2)
+        .join('');
+    userAvatarEl.textContent = initials || '?';
 }
 
 // Centralised forced-logout handler

@@ -4,49 +4,52 @@
     <meta charset="utf-8" />
     <title>Farm Assistant</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-
     <link rel="stylesheet" href="/static/css/custom.css" />
 </head>
 <body>
     <div class="layout chat-layout hidden" id="app-layout">
+        <!-- Sidebar -->
         <aside id="sidebar" class="sidebar">
-            <div class="sidebar-header">
-                <h2>Chats</h2>
-                <button id="new-chat">＋ New</button>
+            <div class="sidebar-top">
+                <div class="sidebar-header">
+                    <h2>Farm Assistant</h2>
+                    <button id="new-chat">＋ New</button>
+                </div>
+                <ul id="session-list" class="session-list">
+                    <!-- Filled by JS -->
+                </ul>
             </div>
-            <ul id="session-list" class="session-list">
-                <!-- Filled by JS -->
-            </ul>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar" id="user-avatar"></div>
+                    <div class="user-details">
+                        <span class="user-name" id="sidebar-user-name"></span>
+                        <span class="user-email" id="sidebar-user-email"></span>
+                    </div>
+                </div>
+                <button id="logout-btn" class="logout-btn" title="Logout">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+            </div>
         </aside>
 
+        <!-- Main Content -->
         <div class="wrap">
-            <div class="auth-info" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <span class="muted">
-                    Welcome, <span id="chat-user-name"></span>
-                    <span style="opacity:.8;">(<span id="chat-user-email"></span>)</span>
-                </span>
-                <button id="logout-btn" type="button">Logout</button>
-            </div>
-
-            <div class="title-bar">
-                <h1>Farm Assistant</h1>
-                <input id="model" type="hidden" value="qwen3-30b-a3b-awq" />
-            </div>
-
             <div class="chat-shell">
                 <div id="chat" class="chat" aria-live="polite" aria-busy="false"></div>
                 <div id="uploaded-files" class="uploaded-files hidden"></div>
 
-                <form id="qform" class="bar composer">
+                <form id="qform" class="composer">
                     <input id="pdf-file" type="file" accept="application/pdf" class="hidden" />
-                    <button id="upload-pdf" type="button" title="Upload PDF" aria-label="Upload PDF"></button>
-                    <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1" maxlength="4000"></textarea>
-                    <button id="send" type="submit" aria-label="Send message"></button>
+                    <div class="composer-inner">
+                        <button id="upload-pdf" type="button" title="Upload PDF" aria-label="Upload PDF"></button>
+                        <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1" maxlength="4000"></textarea>
+                        <div class="composer-actions">
+                            <button id="send" type="submit" aria-label="Send message"></button>
+                        </div>
+                    </div>
+                    <input id="model" type="hidden" value="qwen3-30b-a3b-awq" />
                 </form>
-
-<!--                <div class="audio-row">-->
-<!--                    <audio id="live-audio" preload="none" controls></audio>-->
-<!--                </div>-->
             </div>
         </div>
     </div>

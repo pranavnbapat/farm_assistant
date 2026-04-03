@@ -53,7 +53,7 @@ elif [ "$MODE" == "local" ]; then
     esac
 
     # Run the application
-    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --timeout-keep-alive 120
+    uvicorn app.main:app --reload --host 0.0.0.0 --port 18000 --timeout-keep-alive 120
 else
     echo "Usage: ./run.sh [local|docker] [local|dev|prd]"
     echo ""
