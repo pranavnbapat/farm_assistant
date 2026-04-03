@@ -1,537 +1,315 @@
 # Architecture Documentation
 
-This document describes the architecture of the Farm Assistant RAG application.
+This document describes the current architecture of the Farm Assistant application as implemented in this repository.
 
 ## System Overview
 
-The Farm Assistant is a conversational AI system built on a **Retrieval-Augmented Generation (RAG)** architecture. It combines semantic search over an agricultural knowledge base with large language model inference to provide accurate, source-cited answers.
+Farm Assistant is a FastAPI-based RAG application with a browser chat UI. It uses:
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                           Client (Browser)                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐ │
-│  │  Login Page │───▶│  Chat UI    │───▶│  SSE Stream (text + voice)  │ │
-│  └─────────────┘    └─────────────┘    └─────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Farm Assistant (FastAPI)                         │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐  │
-│  │   Auth      │    │   Router    │    │    Streaming Handler        │  │
-│  │  (/login)   │    │ (Intent)    │    │      (/ask/stream)          │  │
-│  └─────────────┘    └─────────────┘    └─────────────────────────────┘  │
-│         │                  │                         │                  │
-│         ▼                  ▼                         ▼                  │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                      Processing Pipeline                        │    │
-│  │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────┐  │    │
-│  │  │  Search  │──▶│ Context  │──▶│  Prompt  │──▶│  Generation  │  │    │
-│  │  │  (OS)    │   │  Build   │   │  Build   │   │   (vLLM)     │  │    │
-│  │  └──────────┘   └──────────┘   └──────────┘   └──────────────┘  │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        ▼                           ▼                           ▼
-┌───────────────┐          ┌───────────────┐
-│  OpenSearch   │          │     vLLM      │
-│  (Documents)  │          │    (LLM)      │
-└───────────────┘          └───────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                      Django Backend (Auth/Sessions)                     │
-│  ┌─────────────┐   ┌─────────────┐   ┌────────────────────────────────┐ │
-│  │  Auth/JWT   │   │  Sessions   │   │      User Profile Service      │ │
-│  └─────────────┘   └─────────────┘   └────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
+- FastAPI for the web app and public API surface
+- OpenSearch for document retrieval
+- vLLM for answer generation
+- a Django backend for authentication, chat/session persistence, user profiles, facts, and attachment records
+- browser-native speech APIs for voice input and read-aloud
+
+```text
+Browser
+  ├── Login page
+  ├── Chat UI
+  └── SSE chat stream
+          │
+          ▼
+FastAPI App
+  ├── HTML routes: /, /chat, /c/{session_id}
+  ├── Chat stream + chat API routes
+  ├── File upload routes
+  └── Proxy/wrapper routes for Django-backed operations
+          │
+          ├── OpenSearch
+          ├── vLLM
+          └── Django backend
 ```
 
-## Core Components
+## Main Runtime Components
 
-### 1. FastAPI Application (`app/main.py`)
+### FastAPI App (`app/main.py`)
 
-The main entry point that:
-- Initializes the FastAPI application with lifespan management
-- Configures CORS middleware
-- Mounts static files and templates
-- Registers API routers
-- Manages concurrency with semaphores
-- Provides proxy endpoints for Django backend (avoids CORS issues)
+`app/main.py` is the application entry point. It:
 
-Key features:
-- **Lifespan management**: Initializes resources (semaphores) on startup
-- **Environment-based routing**: Different backend URLs for local/dev/production
-- **JWT authentication**: Proxies authentication to Django backend
-- **Session proxying**: Proxies session management calls to Django backend
+- creates the FastAPI app
+- configures docs exposure
+- mounts static assets and templates
+- includes the ask and files routers
+- serves the login and chat HTML routes
+- exposes a public `/chatbot/api/*` wrapper surface
+- proxies session, profile, fact, feedback, login, and logout operations to Django
 
-### 2. Request Flow
+### Ask Router (`app/routers/ask.py`)
 
-#### Chat Request Flow
+This is the main chat execution path. It:
 
-```
-User Query
-    │
-    ▼
-┌─────────────────┐
-│  Domain Check   │ ────► Validates question is agriculture-related
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│  Intent Router  │ ────► Routes to RAG or LLM-only
-└─────────────────┘
-    │
-    ▼ (RAG Path)
-┌─────────────────┐
-│  OpenSearch     │ ────► Retrieve relevant documents
-│  (Neural Search)│
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│ Context Service │ ────► Rank, filter, format documents
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│  Load Profile   │ ────► Get user expertise/farm type/preferences
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│ Prompt Service  │ ────► Build structured prompt with context + profile
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│   vLLM LLM      │ ────► Generate streaming response
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│ Update Profile  │ ────► Extract facts, update user profile
-└─────────────────┘
-    │
-    ▼
-┌─────────────────┐
-│  Response with  │ ────► Citations extracted and linked
-│  Source Links   │
-└─────────────────┘
-```
+- accepts streaming chat requests
+- extracts user identity from the auth token when present
+- loads chat history and user profile context
+- routes turns into the appropriate prompt mode
+- retrieves OpenSearch context when needed
+- streams generated output from vLLM
+- extracts cited sources for display
+- triggers profile/fact updates asynchronously after a completed turn
 
-#### Streaming Architecture
+### Files Router (`app/routers/files.py`)
 
-The application uses **Server-Sent Events (SSE)** for real-time streaming:
+This handles PDF upload and deletion. It:
 
-1. Client establishes SSE connection to `/ask/stream`
-2. Server emits events:
-   - `status`: Processing stage updates (Intent, Search, Context, LLM)
-   - `token`: Individual response tokens
-   - `sources`: Retrieved source documents (filtered by citations)
-   - `stats`: LLM generation statistics
-   - `timing`: Performance metrics
-   - `done`: Completion signal
-   - `error`: Error information
+- accepts PDF uploads
+- extracts text
+- generates a summary
+- stores parsed content in the in-memory document store
+- upserts attachment metadata to the Django backend when auth and session context are available
 
-### 3. Services Layer
+### Search / Context / Prompt Services
 
-#### Search Service (`app/services/search_service.py`)
+The services layer is split by concern:
 
-Orchestrates document retrieval:
-- Builds search payloads for OpenSearch
-- Handles pagination
-- Collects and deduplicates results
-- Provides hit probing for intent classification
+- `app/services/search_service.py`
+  - OpenSearch request orchestration
+  - result normalization and pagination handling
+- `app/services/context_service.py`
+  - document chunk scoring
+  - context block formatting
+  - source tracking for citations
+- `app/services/prompt_service.py`
+  - prompt construction for retrieval-backed turns
+  - prompt construction for history-only recap turns
+  - prompt construction for conversation-only turns
+  - prompt construction for assistant-capability turns
+  - title generation
 
-#### Context Service (`app/services/context_service.py`)
+### Chat History Service (`app/services/chat_history.py`)
 
-Transforms search results into LLM context:
-- **Paragraph splitting**: Divides documents into semantic chunks
-- **Ranking**: Scores paragraphs by query term overlap and keyword boosts
-- **Context building**: Formats documents with metadata (title, source, license, project)
-- **Source tracking**: Maintains citation indices for answer attribution
-- **Retrieval quality estimation**: Simple token overlap scoring
+This loads prior messages for a session from the Django backend and formats them for prompt inclusion. The current implementation is stateless on the FastAPI side; there is no server-side KV-cache reuse layer.
 
-Key algorithm:
-```python
-# Token overlap scoring
-q_tokens = extract_tokens(question)
-for paragraph in document:
-    p_tokens = extract_tokens(paragraph)
-    score = overlap(q_tokens, p_tokens) * 10 + 
-            boost_overlap(p_tokens, keywords) * 4 +
-            position_bonus
+### User Profile Service (`app/services/user_profile_service.py`)
+
+This service reads and updates personalization data through Django-backed APIs. It is used to:
+
+- fetch stored user profile attributes
+- fetch stored user facts
+- build prompt context from profile/fact data
+- infer and write updated profile/fact data from completed conversation turns
+
+### Clients
+
+- `app/clients/vllm_client.py`
+  - OpenAI-compatible chat completion calls to vLLM
+  - token streaming for SSE responses
+- `app/clients/opensearch_client.py`
+  - HTTP requests to OpenSearch
+  - optional auth and SSL verification controls
+
+## Request Flow
+
+### Chat Turn
+
+```text
+User submits message
+  → FastAPI receives /ask/stream request
+  → auth token decoded if present
+  → session history loaded from Django
+  → current client-visible history merged where applicable
+  → user profile/facts loaded from Django
+  → turn mode resolved
+  → if retrieval-backed: OpenSearch queried and context built
+  → prompt built for the chosen mode
+  → vLLM response streamed back over SSE
+  → citations extracted and sources filtered
+  → completed turn can be logged to Django
+  → profile/fact update dispatched asynchronously
 ```
 
-#### Prompt Service (`app/services/prompt_service.py`)
+### Supported Turn Modes
 
-Simple, natural prompt building:
-- **Main Prompt**: Natural conversation format with sources, history, and profile
-- **Summary Prompt**: For text summarization tasks
-- **Title Prompt**: For automatic session title generation
+The current chat flow uses dynamic turn modes rather than a single fixed prompt path:
 
-Key features:
-- **Natural conversation**: Full conversation history provided to LLM
-- **No hardcoded rules**: LLM handles context, language, and relevance naturally
-- **Personalization**: User profile included when available
+- `normal`
+  - retrieval-backed domain answer flow
+- `history_only`
+  - recap/history-summary flow using stored conversation only
+- `conversation_only`
+  - simple conversational continuation without retrieval
+- `assistant_capabilities`
+  - product/self-description flow without retrieval
 
-#### User Profile Service (`app/services/user_profile_service.py`)
+This distinction exists to improve chat quality while preserving a single user-facing chat experience.
 
-Manages user personalization:
-- **Smart extraction**: Only processes substantive messages (skips greetings, meta-instructions)
-- **Profile extraction**: Extracts user attributes from meaningful conversations
-- **Fact storage**: Stores user facts in Django backend
-- **Profile context building**: Creates context string for prompts
+## Streaming Architecture
 
-Extracted attributes:
-- Expertise level (beginner/expert)
-- Farm type (organic, conventional, dairy, etc.)
-- Region and crops
-- Communication preferences
-- Topics of interest
+The chat UI uses Server-Sent Events.
 
-Skipped messages (not profiled):
-- Greetings ("Hi", "How are you?")
-- Meta-instructions ("Answer in English")
-- Short acknowledgments ("OK", "Thanks")
-- Personal questions ("Who created you?")
+Typical event flow:
 
-#### Chat History Service (`app/services/chat_history.py`)
+- `status`
+- `token`
+- `sources`
+- `stats`
+- `timing`
+- `done`
+- `error`
 
-Manages conversation state:
-- Loads session history from Django backend
-- Formats conversation for context window
-- Saves LLM KV cache (legacy, for Ollama)
-- Truncates history to fit context limits
+The browser progressively renders the answer, then renders cited references and timing details when the stream completes.
 
-### 4. Client Layer
+## Browser UI Architecture
 
-#### vLLM Client (`app/clients/vllm_client.py`)
+### Login / Auth
 
-Primary LLM interface using OpenAI-compatible API:
-- **Streaming generation**: Yields tokens via SSE as they're produced
-- **Stateless API**: No KV cache reuse between turns (unlike Ollama)
-- **Configurable options**: Temperature, max_tokens, top_p
-- **API key support**: For authenticated vLLM endpoints
+The browser login flow posts credentials to FastAPI, which forwards them to the Django backend. Tokens and identity metadata are stored in `localStorage` and reused for chat, session, and profile operations.
 
-Key parameters:
-```python
-{
-    "temperature": 0.4,      # Balanced creativity
-    "max_tokens": -1,        # Auto (vLLM decides)
-    "top_p": 0.9,            # Nucleus sampling
-    "model": "qwen3-30b"     # Model identifier
-}
-```
+### Chat UI (`static/js/chat.js`)
 
-**Note**: vLLM uses the OpenAI chat completions format (`/v1/chat/completions`).
+The chat frontend is responsible for:
 
-#### OpenSearch Client (`app/clients/opensearch_client.py`)
+- session list rendering and grouping
+- URL-based chat selection (`/c/{session_id}`)
+- opening and restoring chat history
+- starting SSE requests
+- rendering streamed assistant messages
+- rendering citations and markdown-like formatting
+- inline assistant message actions:
+  - copy
+  - like
+  - regenerate
+  - read aloud
+- sending message feedback
+- sending completed-turn persistence payloads
 
-Simple HTTP client for OpenSearch:
-- Basic authentication support
-- SSL verification configuration
-- Request timeout handling
+### Voice (`static/js/voice.js`)
 
-### 5. Routers
+Voice behavior is browser-native:
 
-#### Ask Router (`app/routers/ask.py`)
+- speech recognition fills the text input
+- speech synthesis reads assistant answers aloud
 
-Main chat endpoint implementing:
+There is no active server-side TTS router in the current implementation.
 
-**Request Processing**:
-```python
-# Natural conversation flow - no hardcoded logic
-# 1. Always search (LLM decides if results are useful)
-# 2. Send full conversation history to LLM
-# 3. LLM naturally handles context and continuity
-```
+## Public API Surface
 
-**User Extraction**:
-```python
-user_uuid = _extract_user_uuid_from_token(auth_token)
-# Extracts UUID from JWT for profile loading
-```
+The app exposes a documented `/chatbot/api/*` surface that wraps the same underlying logic used by the web UI.
 
-**Natural Conversation Flow**:
-```python
-# No separate intent classification
-# No hardcoded "ambiguous response" detection
-# Full history + search results → LLM handles naturally
-prompt = build_prompt(contexts, question, history, profile)
-response = await stream_generate(prompt)
-```
+Current documented groups:
 
-**Concurrency Control**:
-- Semaphore-based limiting (default: 3 concurrent generations)
-- Queue status messages when at capacity
+- Authentication
+- Chats
+- User Profile
+- Files
 
-**Citation Processing**:
-- Extracts citation patterns: `[1]`, `[1, 2]`, `(source 1)`, `source 2`
-- Filters sources to only include cited documents
-- Falls back to top-5 if no citations found
+The UI page routes `/`, `/chat`, and `/c/{session_id}` are intentionally hidden from OpenAPI.
 
-**Profile Update** (fire-and-forget):
-```python
-asyncio.create_task(
-    UserProfileService.process_conversation_turn(
-        user_uuid, session_id, user_q, full_text, auth_token
-    )
-)
-```
+See [API_ENDPOINT_SURFACE.md](./API_ENDPOINT_SURFACE.md) for the endpoint inventory.
 
-#### TTS Router (`app/routers/tts.py`)
+## State and Persistence Model
 
-Server-side text-to-speech pipeline:
-1. Accepts NDJSON text stream
-2. Feeds to Piper TTS (PCM output)
-3. Transcodes to WebM/Opus via FFmpeg
-4. Streams audio chunks to client
+### FastAPI Side
 
-Voice registry supports:
-- `en-gb-male` (Alan)
-- `en-gb-female` (Alba)
-- `en-gb-neutral` (Alan)
+FastAPI is largely stateless across requests. It holds:
 
-### 6. Frontend Architecture
+- in-memory PDF document data for uploaded files
+- concurrency primitives
+- transient request state during streaming
 
-#### Authentication Flow (`static/js/auth.js`, `static/js/login.js`)
+### Django Side
 
-```
-┌─────────┐     ┌─────────────┐     ┌────────────────┐
-│  User   │────▶│  /api/login │────▶│ Django Backend │
-└─────────┘     └─────────────┘     └────────────────┘
-                                              │
-┌─────────┐     ┌─────────────┐              ▼
-│  Chat   │◀────│  JWT Store  │◀───── Access/Refresh Tokens
-│  Page   │     │ (localStorage)│
-└─────────┘     └─────────────┘
-```
+Django is the durable system of record for:
 
-Token management:
-- Access token stored in `localStorage`
-- Refresh token for automatic renewal
-- Automatic logout on token expiration
-- Session management via Django backend proxy
-
-#### Chat Interface (`static/js/chat.js`)
-
-Features:
-- **Session management**: Create, load, delete chat sessions
-- **Streaming display**: Real-time token rendering
-- **Citation rendering**: Converts `[1]` to superscript links
-- **Voice integration**: Browser speech synthesis with 🔊 button
-- **Auto-focus**: `/` key or any printable key focuses input from anywhere
-- **Think time display**: Shows server processing duration
-
-Event handling:
-```javascript
-// SSE event types
-es.addEventListener('status', handleStatus);
-es.addEventListener('token', handleToken);
-es.addEventListener('sources', handleSources);
-es.addEventListener('timing', handleTiming);
-es.addEventListener('done', handleDone);
-```
-
-#### Voice Support (`static/js/voice.js`)
-
-Comprehensive voice support for 24 EU languages:
-
-**TTS Manager**:
-- Browser Web Speech API integration
-- Automatic language detection from text
-- Manual language override
-- Play/pause/stop controls
-- Best voice selection per language
-
-**STT Manager**:
-- Web Speech Recognition API
-- Continuous listening mode
-- Interim results display
-- 24 EU language support
-- Touch-friendly mobile interface
-
-## Data Flow
-
-### Request Lifecycle
-
-```
-1. Request Received
-   ├── Validate authentication (JWT in localStorage/query param)
-   ├── Extract user UUID from token
-   └── Initialize streaming response
-
-2. Domain Validation
-   ├── Check for non-agriculture keywords
-   └── Log result for analytics
-
-3. Intent Classification
-   ├── Call intent router service
-   └── Determine: RAG or LLM-only
-
-4. User Profile Loading (async)
-   ├── Fetch profile from Django
-   └── Build profile context string
-
-5. Document Retrieval (RAG path)
-   ├── Build search query
-   ├── Query OpenSearch
-   └── Receive ranked documents
-
-6. Context Preparation
-   ├── Split documents into paragraphs
-   ├── Rank by relevance
-   ├── Select top-k chunks
-   └── Format with metadata
-
-7. Prompt Construction
-   ├── Load conversation history
-   ├── Inject profile context
-   ├── Inject context blocks
-   ├── Apply domain restriction rules
-   ├── Apply language rules
-   └── Build final prompt
-
-8. Generation
-   ├── Stream to vLLM
-   ├── Yield tokens via SSE
-   └── Capture statistics
-
-9. Post-Processing
-   ├── Extract citations
-   ├── Filter source list
-   ├── Update session title (first turn)
-   ├── Update user profile (fire-and-forget)
-   └── Cache response
-
-10. Response Complete
-    ├── Emit sources (cited only)
-    ├── Emit timing metrics
-    └── Close SSE connection
-```
+- authentication
+- chat sessions
+- chat messages
+- message feedback
+- user profiles
+- user facts
+- attachment records
 
 ## Configuration Architecture
 
-Settings are managed via Pydantic Settings with environment variable support:
+Settings are defined in `app/config.py` via Pydantic Settings.
 
-```python
-class Settings(BaseSettings):
-    # Environment
-    FA_ENV: str  # local/dev/prd
-    
-    # OpenSearch
-    OPENSEARCH_API_URL: str
-    OPENSEARCH_API_USR: str | None
-    OPENSEARCH_API_PWD: str | None
-    
-    # vLLM (Primary)
-    VLLM_URL: str
-    VLLM_MODEL: str
-    VLLM_API_KEY: str | None
+Key settings groups:
 
-    # Feature flags
-    ENABLE_DOCS: bool
-    ENABLE_REDOC: bool
-```
+- environment selection: `FA_ENV`
+- app/docs flags: `LOG_LEVEL`, `APP_TITLE`, `APP_VERSION`, `ENABLE_DOCS`, `ENABLE_REDOC`
+- backend routing: `CHAT_BACKEND_URL`
+- OpenSearch config
+- vLLM config
+- generation limits and defaults
 
-Environment-specific backends:
-| Environment | Django Backend | Auth Endpoint |
-|-------------|----------------|---------------|
-| local | http://127.0.0.1:8000 | /fastapi/login/ |
-| dev | https://backend-admin.dev.farmbook.ugent.be | /fastapi/login/ |
-| prd | https://backend-admin.prd.farmbook.ugent.be | /fastapi/login/ |
+Environment selection influences which Django backend base URL is used when an explicit `CHAT_BACKEND_URL` override is not provided.
 
-## Security Considerations
+## Security Notes
 
-1. **Authentication**: JWT tokens with automatic refresh via Django backend
-2. **CORS**: Configured for all origins (adjust for production)
-3. **SSL**: Configurable verification for external APIs
-4. **Input Sanitization**: HTML escaping in frontend
-5. **Rate Limiting**: Concurrency semaphore on generation
-6. **Token Storage**: Tokens stored in localStorage (consider httpOnly cookies for enhanced security)
+- JWTs are stored in browser `localStorage`
+- the streaming endpoint currently accepts auth via query parameter for the SSE flow
+- auth/session/profile operations are proxied through FastAPI to avoid frontend CORS issues
+- SSL verification for OpenSearch is configurable
 
-## Performance Optimizations
+## Performance Characteristics
 
-1. **Streaming**: Immediate token delivery via SSE
-2. **Connection Pooling**: HTTPX async clients with keep-alive
-3. **Concurrent Search**: Parallel document fetching
-4. **Lazy Loading**: Models loaded on first request
-5. **Context Truncation**: History limited to fit context window
-6. **Profile Caching**: User profiles cached per request
+The current codebase optimizes for responsiveness through:
 
-## Deployment
+1. SSE token streaming
+2. HTTP connection reuse via `httpx`
+3. bounded generation concurrency
+4. prompt/context truncation
+5. direct browser rendering without a heavy frontend framework
 
-### Docker Architecture
+There is no Redis-backed response cache in the current implementation.
 
-```dockerfile
-# Multi-stage build
-FROM python:3.11-slim
+## Deployment Model
 
-# System deps: tini + build toolchain + OpenBLAS runtime + FFmpeg
-# Python dependencies from requirements.txt
-# Piper voice models downloaded at build time
+### Local
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", 
-     "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-keep-alive", "120"]
-```
+- `./run.sh local`
+- `./run.sh local dev`
+- `./run.sh local prd`
+- `./run.sh docker`
+
+### Docker
+
+The repo `docker-compose.yml` currently runs a single `farm_assistant` service built from this repository and configured through `.env`.
 
 ### External Dependencies
 
 | Service | Purpose | Required |
 |---------|---------|----------|
-| vLLM | LLM inference | Yes (primary) |
-| OpenSearch | Document search | Yes |
-| Django Backend | Auth, sessions, profiles | Yes |
-| Intent Router | Query classification | No (falls back to RAG) |
-| Ollama | LLM inference (legacy) | No |
+| vLLM | LLM inference | Yes |
+| OpenSearch | Retrieval | Yes |
+| Django backend | Auth, sessions, profile, feedback, attachments | Yes |
 
 ## Extension Points
 
-1. **New LLM Backends**: Implement `generate_once()` and `stream_generate()` interface in `app/clients/`
-2. **Custom Search**: Extend `SearchService` with additional backends
-3. **Additional TTS Voices**: Add entries to `VOICES` registry in `app/routers/tts.py`
-4. **Custom Prompts**: Modify templates in `prompt_service.py`
-5. **New Routers**: Add API endpoints in `app/routers/`
-6. **Enhanced Profile Extraction**: Implement LLM-based extraction in `user_profile_service.py`
+Practical extension points in the current code:
 
-## Monitoring & Debugging
+1. add or swap a different retrieval backend in `search_service.py`
+2. change ranking/context construction in `context_service.py`
+3. refine prompt behavior in `prompt_service.py`
+4. add more public wrapper endpoints in `app/main.py`
+5. expand client-side message actions in `static/js/chat.js`
+6. improve profile extraction heuristics or model-driven extraction in `user_profile_service.py`
 
-- **Health Check**: `GET /health`
-- **API Docs**: `/docs` (when enabled)
-- **Logs**: Structured logging with configurable levels
-- **Timing Metrics**: Included in SSE `timing` events
-- **Profile Logging**: User profile updates logged
+## Monitoring and Debugging
 
-## Multi-language Architecture
+Operational visibility currently comes from:
 
-The system supports all 24 EU languages through:
+- `GET /health`
+- FastAPI logs
+- timing events in the SSE stream
+- browser-side inspection of streaming/status behavior
 
-1. **Language Detection**: LLM instructed to respond in user's question language
-2. **Translation**: Sources may be in different language; LLM translates content
-3. **Voice Support**: 
-   - STT: Web Speech Recognition with 24 EU language codes
-   - TTS: Browser voices with automatic language detection
-4. **Prompt Rules**: Explicit instructions in prompts to maintain language consistency
+## Personalization Model
 
-## Personalization Architecture
+User personalization is additive rather than mandatory. The assistant can still answer without a stored profile, but when profile/fact data exists it influences:
 
-User profiles enhance responses without sending full chat history:
+- explanation depth
+- terminology level
+- relevance of examples
+- continuity across ongoing user-specific discussions
 
-```
-Conversation → Extraction → Profile Store → Context Building → Prompt Injection
-     │              │              │                │                  │
-     ▼              ▼              ▼                ▼                  ▼
-User asks    Keywords/LLM    Django API      Format as string    "User Profile:
-question     extract facts    (PostgreSQL)    for prompt          - Expertise: expert
-                                                              - Farm: organic dairy"
-```
-
-Profile attributes influence:
-- Explanation depth (beginner vs expert)
-- Technical terminology usage
-- Organic vs conventional recommendations
-- Regional considerations
+See [USER_DATA_CAPTURE_AND_USAGE.md](./USER_DATA_CAPTURE_AND_USAGE.md) for the data inventory.

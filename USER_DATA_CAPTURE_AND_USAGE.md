@@ -219,7 +219,7 @@ This document summarizes what user information is captured in this codebase and 
   - previous conversation snippet,
   - user profile context (if present).
 
-## 10) Notable Privacy/Security Observations From Code
+## 9) Notable Privacy/Security Observations From Code
 
 - Tokens are stored in `localStorage` (XSS-sensitive storage location).
 - SSE auth token is passed via URL query parameter (`auth_token`) for `/ask/stream`.
