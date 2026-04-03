@@ -356,15 +356,15 @@ select {
 /* Composer bar at the bottom, no sticky top */
 .bar {
     display: grid;
-    grid-template-columns: auto 1fr auto auto auto auto;
-    gap: 8px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px auto 44px;
+    gap: 10px;
     background: var(--panel);
-    padding: 10px;
-    border-radius: 12px;
+    padding: 12px;
+    border-radius: 16px;
     border: 1px solid #223043;
     position: static;             /* remove sticky */
     box-shadow: 0 -2px 12px rgba(0,0,0,0.45);
-    align-items: end;
+    align-items: center;
 }
 
 /* Just to differentiate the composer if you want */
@@ -376,10 +376,91 @@ select {
     width: 44px;
     height: 44px;
     padding: 0;
-    border-radius: 10px;
-    font-size: 22px;
-    line-height: 1;
-    font-weight: 500;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s;
+}
+
+#upload-pdf svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+
+#upload-pdf:disabled {
+    background: #1b2637;
+    border-color: #223043;
+    color: #607089;
+    cursor: not-allowed;
+}
+
+#upload-pdf.is-loading {
+    background: #162234;
+    border-color: #375173;
+    color: #9fc1ff;
+    position: relative;
+}
+
+#upload-pdf.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 10px;
+    border: 2px solid rgba(159, 193, 255, 0.22);
+    border-top-color: #9fc1ff;
+    border-radius: 999px;
+    animation: uploadSpin 0.8s linear infinite;
+}
+
+#question {
+    min-width: 0;
+}
+
+#send {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #6b8cff;
+    border-color: #6b8cff;
+    color: #0b1020;
+    box-shadow: 0 6px 18px rgba(107, 140, 255, 0.18);
+    transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, color 0.2s;
+}
+
+#send svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+}
+
+#send:hover {
+    background: #7a98ff;
+    border-color: #7a98ff;
+}
+
+#send:disabled {
+    background: #1b2637;
+    border-color: #223043;
+    color: #607089;
+    box-shadow: none;
+    cursor: not-allowed;
+    opacity: 1;
+}
+
+#send.is-stop {
+    background: #7a2026;
+    border-color: #a83b45;
+    color: #f8d8db;
+    box-shadow: none;
+}
+
+#send.is-stop:hover {
+    background: #902730;
 }
 
 .uploaded-files {
@@ -442,7 +523,7 @@ select {
     margin-bottom: 8px;
 }
 
-/* Title bar with model selector */
+/* Title bar */
 .title-bar {
     margin-bottom: 12px;
     overflow: hidden;
@@ -451,28 +532,6 @@ select {
 .title-bar h1 {
     margin: 0;
     float: left;
-}
-
-.title-bar #model {
-    float: right;
-    background: #0f1520;
-    border: 1px solid #223043;
-    color: var(--text);
-    border-radius: 10px;
-    padding: 8px 12px;
-    outline: none;
-    font-size: 14px;
-    cursor: pointer;
-    max-width: 200px;
-}
-
-.title-bar #model:hover {
-    border-color: #314764;
-}
-
-.title-bar #model option {
-    background: var(--panel);
-    color: var(--text);
 }
 
 .auth-info {
@@ -543,7 +602,7 @@ select {
     padding: 12px 16px;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
     z-index: 1000;
-    min-width: 200px;
+    min-width: 150px;
 }
 
 .tts-controls.hidden {
@@ -572,14 +631,26 @@ select {
     background: #1a2434;
     border: 1px solid #223043;
     border-radius: 8px;
-    padding: 8px 12px;
+    padding: 8px;
     cursor: pointer;
-    font-size: 16px;
     transition: background 0.2s;
+    width: 38px;
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .tts-btn:hover {
     background: #2a3d57;
+}
+
+.tts-btn svg,
+.speak-btn svg,
+.stt-mic-btn svg {
+    width: 18px;
+    height: 18px;
+    display: block;
 }
 
 /* Speak Button (per message) */
@@ -587,12 +658,16 @@ select {
     background: transparent;
     border: 1px solid #314764;
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 4px;
     cursor: pointer;
-    font-size: 14px;
     margin-left: 8px;
     opacity: 0.7;
     transition: opacity 0.2s, background 0.2s;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .speak-btn:hover {
@@ -605,11 +680,15 @@ select {
     background: #1a2434;
     border: 1px solid #223043;
     border-radius: 10px;
-    padding: 10px 14px;
+    padding: 10px;
     cursor: pointer;
-    font-size: 18px;
     transition: all 0.2s;
     margin-left: 4px;
+    width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .stt-mic-btn:hover {
@@ -622,58 +701,106 @@ select {
     animation: pulse 1.5s infinite;
 }
 
+.stt-listening-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 88px;
+    height: 44px;
+    padding: 0 12px;
+    border: 1px solid #223043;
+    border-radius: 999px;
+    background: #101722;
+    color: var(--muted);
+    justify-self: start;
+}
+
+.stt-listening-indicator.hidden {
+    display: none;
+}
+
+.stt-wave-bar {
+    width: 3px;
+    height: 10px;
+    border-radius: 999px;
+    background: #7ea7ff;
+    animation: sttWave 1s ease-in-out infinite;
+}
+
+.stt-wave-bar:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.stt-wave-bar:nth-child(3) {
+    animation-delay: 0.3s;
+}
+
+.stt-wave-label {
+    margin-left: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+    .bar {
+        grid-template-columns: 40px minmax(0, 1fr) 40px auto 40px;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 14px;
+    }
+
+    #upload-pdf,
+    #send,
+    .stt-mic-btn {
+        width: 40px;
+        height: 40px;
+    }
+
+    .stt-listening-indicator {
+        min-width: 46px;
+        padding: 0 10px;
+    }
+
+    .stt-wave-label {
+        display: none;
+    }
+}
+
+@media (max-width: 560px) {
+    .bar {
+        grid-template-columns: 38px minmax(0, 1fr) 38px 38px;
+        gap: 6px;
+        padding: 8px;
+    }
+
+    #upload-pdf,
+    #send,
+    .stt-mic-btn {
+        width: 38px;
+        height: 38px;
+    }
+
+    .stt-listening-indicator {
+        min-width: 38px;
+        padding: 0;
+        justify-content: center;
+    }
+
+    .stt-wave-bar:nth-child(3) {
+        display: none;
+    }
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.7; transform: scale(1.05); }
 }
 
-/* Language indicator for STT */
-.stt-lang-indicator {
-    font-size: 11px;
-    color: var(--muted);
-    margin-left: 8px;
+@keyframes sttWave {
+    0%, 100% { transform: scaleY(0.65); opacity: 0.65; }
+    50% { transform: scaleY(1.35); opacity: 1; }
 }
 
-/* Voice Language Selector (STT) */
-#voice-lang {
-    background: #0f1520;
-    border: 1px solid #223043;
-    color: var(--text);
-    border-radius: 10px;
-    padding: 10px 12px;
-    outline: none;
-    font-size: 14px;
-    cursor: pointer;
-    max-width: 140px;
-}
-
-#voice-lang:hover {
-    border-color: #314764;
-}
-
-#voice-lang option {
-    background: var(--panel);
-    color: var(--text);
-}
-
-/* TTS Language Selector in control bar */
-.tts-lang-select {
-    background: #0f1520;
-    border: 1px solid #223043;
-    color: var(--text);
-    border-radius: 8px;
-    padding: 6px 10px;
-    outline: none;
-    font-size: 13px;
-    cursor: pointer;
-    max-width: 150px;
-}
-
-.tts-lang-select:hover {
-    border-color: #314764;
-}
-
-.tts-lang-select option {
-    background: var(--panel);
-    color: var(--text);
+@keyframes uploadSpin {
+    to { transform: rotate(360deg); }
 }

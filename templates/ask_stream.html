@@ -30,9 +30,7 @@
 
             <div class="title-bar">
                 <h1>Farm Assistant</h1>
-                <select id="model" aria-label="Model">
-                    <option value="qwen3-30b-a3b-awq" selected>Qwen3 30B</option>
-                </select>
+                <input id="model" type="hidden" value="qwen3-30b-a3b-awq" />
             </div>
 
             <div class="chat-shell">
@@ -41,38 +39,9 @@
 
                 <form id="qform" class="bar composer">
                     <input id="pdf-file" type="file" accept="application/pdf" class="hidden" />
-                    <button id="upload-pdf" type="button" title="Upload PDF">+</button>
+                    <button id="upload-pdf" type="button" title="Upload PDF" aria-label="Upload PDF"></button>
                     <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1" maxlength="4000"></textarea>
-                    
-                    <select id="voice-lang" aria-label="Voice Language" title="Speech Recognition Language">
-                        <option value="en-GB" selected>🇬🇧 English</option>
-                        <option value="nl-NL">🇳🇱 Nederlands</option>
-                        <option value="de-DE">🇩🇪 Deutsch</option>
-                        <option value="fr-FR">🇫🇷 Français</option>
-                        <option value="es-ES">🇪🇸 Español</option>
-                        <option value="it-IT">🇮🇹 Italiano</option>
-                        <option value="pt-PT">🇵🇹 Português</option>
-                        <option value="pl-PL">🇵🇱 Polski</option>
-                        <option value="ro-RO">🇷🇴 Română</option>
-                        <option value="bg-BG">🇧🇬 Български</option>
-                        <option value="hr-HR">🇭🇷 Hrvatski</option>
-                        <option value="cs-CZ">🇨🇿 Čeština</option>
-                        <option value="da-DK">🇩🇰 Dansk</option>
-                        <option value="et-EE">🇪🇪 Eesti</option>
-                        <option value="fi-FI">🇫🇮 Suomi</option>
-                        <option value="el-GR">🇬🇷 Ελληνικά</option>
-                        <option value="hu-HU">🇭🇺 Magyar</option>
-                        <option value="ga-IE">🇮🇪 Gaeilge</option>
-                        <option value="lv-LV">🇱🇻 Latviešu</option>
-                        <option value="lt-LT">🇱🇹 Lietuvių</option>
-                        <option value="mt-MT">🇲🇹 Malti</option>
-                        <option value="sk-SK">🇸🇰 Slovenčina</option>
-                        <option value="sl-SI">🇸🇮 Slovenščina</option>
-                        <option value="sv-SE">🇸🇪 Svenska</option>
-                    </select>
-                    
-                    <button id="send" type="submit">Send</button>
-                    <button id="stop" type="button" class="hidden">Stop</button>
+                    <button id="send" type="submit" aria-label="Send message"></button>
                 </form>
 
 <!--                <div class="audio-row">-->

@@ -25,6 +25,11 @@ let refreshToken = localStorage.getItem('fa_refresh_token') || null;
 // Email: prefer the new key 'fa_user_email', fall back to legacy 'fa_email'
 const storedUserEmail = localStorage.getItem('fa_user_email') || localStorage.getItem(LS_EMAIL);
 const authEmail = storedUserEmail || '';
+const DEBUG = false;
+
+function debugLog(...args) {
+    if (DEBUG) console.log(...args);
+}
 
 // If no token, send user back to login
 if (!authToken) {
@@ -252,6 +257,9 @@ function extractMessageId(payload) {
 
 function getSvgIcon(name) {
     const icons = {
+        upload: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7.5 9.5 12 5l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+        send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 10 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="m21 3-7 18-4-7-7-4 18-7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+        stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
         copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
         like: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3zm0-9 4-9c.4-1 2-1 2 0v4h5.6c1.3 0 2.2 1.2 1.8 2.4l-1.9 7A2 2 0 0 1 16.6 18H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
         dislike: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3zm0 9-4 9c-.4 1-2 1-2 0v-4H5.4c-1.3 0-2.2-1.2-1.8-2.4l1.9-7A2 2 0 0 1 7.4 6H17z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
@@ -871,7 +879,7 @@ if (newChatBtn) {
 
 // Log each completed Q&A turn to Django
 async function logChatTurnToBackend(userText, assistantText, latencyMs) {
-    console.log('Logging chat turn:', { userText: userText?.substring(0, 50), assistantText: assistantText?.substring(0, 50), session: currentSessionUuid });
+    debugLog('Logging chat turn:', { userText: userText?.substring(0, 50), assistantText: assistantText?.substring(0, 50), session: currentSessionUuid });
     
     if (!authToken) {
         console.warn('Cannot log: no auth token');
@@ -886,7 +894,7 @@ async function logChatTurnToBackend(userText, assistantText, latencyMs) {
         appendPendingTurn(currentSessionUuid, userText, assistantText, latencyMs);
     }
 
-    console.log('Sending to:', LOG_TURN_URL);
+    debugLog('Sending to:', LOG_TURN_URL);
     
     try {
         const res = await fetch(LOG_TURN_URL, {
@@ -989,11 +997,14 @@ const chat = document.getElementById('chat');
 const form = document.getElementById('qform');
 const input = document.getElementById('question');
 const btnSend = document.getElementById('send');
-const btnStop = document.getElementById('stop');
 const selModel = document.getElementById('model');
 const uploadPdfBtn = document.getElementById('upload-pdf');
 const pdfFileInput = document.getElementById('pdf-file');
 const uploadedFilesEl = document.getElementById('uploaded-files');
+
+if (uploadPdfBtn) {
+    uploadPdfBtn.innerHTML = `${getSvgIcon('upload')}<span class="sr-only">Upload PDF</span>`;
+}
 
 function clearUploadedFileChips() {
     if (!uploadedFilesEl) return;
@@ -1009,8 +1020,15 @@ function autoResizeTextarea() {
     input.style.height = newHeight + 'px';
 }
 
+function hasComposerDraft() {
+    return !!(input && input.value.trim());
+}
+
 if (input) {
-    input.addEventListener('input', autoResizeTextarea);
+    input.addEventListener('input', () => {
+        autoResizeTextarea();
+        updateComposerPrimaryButton(!!es);
+    });
 }
 
 let es = null;
@@ -1025,6 +1043,17 @@ let statusLeft = null;
 let statusRight = null;
 let lastAssistantFollowupQuestion = '';
 let nextTurnMeta = null;
+
+function updateComposerPrimaryButton(isStreaming) {
+    if (!btnSend) return;
+    btnSend.classList.toggle('is-stop', !!isStreaming);
+    btnSend.disabled = !isStreaming && !hasComposerDraft();
+    btnSend.title = isStreaming ? 'Stop response' : 'Send message';
+    btnSend.setAttribute('aria-label', isStreaming ? 'Stop response' : 'Send message');
+    btnSend.innerHTML = isStreaming
+        ? `${getSvgIcon('stop')}<span class="sr-only">Stop</span>`
+        : `${getSvgIcon('send')}<span class="sr-only">Send</span>`;
+}
 
 function isShortAffirmation(text) {
     const t = String(text || '')
@@ -1471,8 +1500,7 @@ function startStream(q) {
     serverTimingMs = null;
     clientStartTs = Date.now();
 
-    btnSend.disabled = true;
-    btnStop.classList.remove('hidden');
+    updateComposerPrimaryButton(true);
     chat.setAttribute('aria-busy', 'true');
 
     const sendDocIds = [...activeDocIds];
@@ -1515,7 +1543,7 @@ function startStream(q) {
     }
 
     // Add auth token as query param since SSE doesn't support custom headers
-    console.log('DEBUG: authToken exists?', !!authToken, 'token length:', authToken ? authToken.length : 0);
+    debugLog('SSE auth token present?', !!authToken);
     if (authToken) {
         params.append('auth_token', 'Bearer ' + authToken);
     }
@@ -1525,7 +1553,7 @@ function startStream(q) {
     clearUploadedFileChips();
     
     const url = `${chatBackendBase}/ask/stream?` + params.toString();
-    console.log('DEBUG: SSE URL (without token):', url.replace(/auth_token=Bearer%20[^&]+/, 'auth_token=***'));
+    debugLog('SSE URL:', url.replace(/auth_token=Bearer%20[^&]+/, 'auth_token=***'));
     es = new EventSource(url);
 
     es.addEventListener('status', (e) => {
@@ -1616,8 +1644,7 @@ function cleanup() {
         es.close();
         es = null;
     }
-    btnSend.disabled = false;
-    btnStop.classList.add('hidden');
+    updateComposerPrimaryButton(false);
     chat.setAttribute('aria-busy', 'false');
     if (statusNode) statusNode.classList.remove('blink');
     if (window.speechSynthesis) {
@@ -1628,6 +1655,13 @@ function cleanup() {
 
 async function uploadPdfFile(file) {
     if (!file || !authToken) return;
+
+    if (uploadPdfBtn) {
+        uploadPdfBtn.disabled = true;
+        uploadPdfBtn.classList.add('is-loading');
+        uploadPdfBtn.setAttribute('aria-busy', 'true');
+        uploadPdfBtn.title = 'Uploading PDF...';
+    }
 
     const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const pendingChip = renderUploadedFileChip(tempId, file.name || 'document.pdf', 'Uploading...');
@@ -1672,6 +1706,13 @@ async function uploadPdfFile(file) {
         if (pendingChip) {
             const st = pendingChip.querySelector('.file-chip-status');
             if (st) st.textContent = 'Failed';
+        }
+    } finally {
+        if (uploadPdfBtn) {
+            uploadPdfBtn.disabled = false;
+            uploadPdfBtn.classList.remove('is-loading');
+            uploadPdfBtn.removeAttribute('aria-busy');
+            uploadPdfBtn.title = 'Upload PDF';
         }
     }
 }
@@ -1746,6 +1787,11 @@ if (uploadPdfBtn && pdfFileInput) {
 if (form) {
     form.addEventListener('submit', async (ev) => {
         ev.preventDefault();
+        if (es) {
+            cancelled = true;
+            cleanup();
+            return;
+        }
         const q = input.value.trim();
         if (!q) return;
         if (q.length > MAX_QUESTION_CHARS) {
@@ -1768,14 +1814,6 @@ if (form) {
     });
 }
 
-// Stop button cancels current stream
-if (btnStop) {
-    btnStop.addEventListener('click', () => {
-        cancelled = true;
-        cleanup();
-    });
-}
-
 // Convenience: Enter sends, Shift+Enter adds newline
 if (input && form) {
     input.addEventListener('keydown', (e) => {
@@ -1785,6 +1823,8 @@ if (input && form) {
         }
     });
 }
+
+updateComposerPrimaryButton(false);
 
 // Initial load of sessions when the page opens
 (async function initChatPage() {

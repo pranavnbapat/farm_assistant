@@ -4,6 +4,22 @@
 
 (function() {
     'use strict';
+    const DEBUG = false;
+
+    function debugLog(...args) {
+        if (DEBUG) console.log(...args);
+    }
+
+    function getVoiceSvgIcon(name) {
+        const icons = {
+            speaker: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M18 9a4 4 0 0 1 0 6M20.5 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+            mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19 11a7 7 0 0 1-14 0M12 18v3M8 21h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+            pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+            play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+            stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+        };
+        return icons[name] || '';
+    }
 
     // =========================
     // EU Language Support
@@ -47,7 +63,6 @@
         currentText: '',
         currentPosition: 0,
         controlContainer: null,
-        manualLang: null,  // Allow user to override auto-detected language
         voices: [],        // Available voices
         currentVoice: null,
 
@@ -70,11 +85,11 @@
         // Load available voices
         loadVoices() {
             this.voices = this.synthesis.getVoices() || [];
-            console.log(`Loaded ${this.voices.length} TTS voices`);
+            debugLog(`Loaded ${this.voices.length} TTS voices`);
             
             // Log available languages
             const uniqueLangs = [...new Set(this.voices.map(v => v.lang.split('-')[0]))];
-            console.log('Available voice languages:', uniqueLangs.join(', '));
+            debugLog('Available voice languages:', uniqueLangs.join(', '));
         },
 
         // Create floating TTS controls
@@ -85,37 +100,13 @@
             container.innerHTML = `
                 <div class="tts-control-bar">
                     <span class="tts-status">🔊 Playing</span>
-                    <select id="tts-lang-select" class="tts-lang-select" title="TTS Language (Auto = auto-detect)">
-                        <option value="auto" selected>🌐 Auto-detect</option>
-                        <option value="en-GB">🇬🇧 English (UK)</option>
-                        <option value="en-US">🇺🇸 English (US)</option>
-                        <option value="nl-NL">🇳🇱 Dutch</option>
-                        <option value="de-DE">🇩🇪 German</option>
-                        <option value="fr-FR">🇫🇷 French</option>
-                        <option value="es-ES">🇪🇸 Spanish</option>
-                        <option value="it-IT">🇮🇹 Italian</option>
-                        <option value="pt-PT">🇵🇹 Portuguese</option>
-                        <option value="pl-PL">🇵🇱 Polish</option>
-                        <option value="ro-RO">🇷🇴 Romanian</option>
-                        <option value="bg-BG">🇧🇬 Bulgarian</option>
-                        <option value="hr-HR">🇭🇷 Croatian</option>
-                        <option value="cs-CZ">🇨🇿 Czech</option>
-                        <option value="da-DK">🇩🇰 Danish</option>
-                        <option value="et-EE">🇪🇪 Estonian</option>
-                        <option value="fi-FI">🇫🇮 Finnish</option>
-                        <option value="el-GR">🇬🇷 Greek</option>
-                        <option value="hu-HU">🇭🇺 Hungarian</option>
-                        <option value="ga-IE">🇮🇪 Irish</option>
-                        <option value="lv-LV">🇱🇻 Latvian</option>
-                        <option value="lt-LT">🇱🇹 Lithuanian</option>
-                        <option value="mt-MT">🇲🇹 Maltese</option>
-                        <option value="sk-SK">🇸🇰 Slovak</option>
-                        <option value="sl-SI">🇸🇮 Slovenian</option>
-                        <option value="sv-SE">🇸🇪 Swedish</option>
-                    </select>
                     <div class="tts-buttons">
-                        <button id="tts-pause" class="tts-btn" title="Pause/Resume">⏸️</button>
-                        <button id="tts-stop" class="tts-btn" title="Stop">⏹️</button>
+                        <button id="tts-pause" class="tts-btn" type="button" title="Pause" aria-label="Pause">
+                            ${getVoiceSvgIcon('pause')}
+                        </button>
+                        <button id="tts-stop" class="tts-btn" type="button" title="Stop" aria-label="Stop">
+                            ${getVoiceSvgIcon('stop')}
+                        </button>
                     </div>
                 </div>
             `;
@@ -125,20 +116,20 @@
             // Event listeners
             container.querySelector('#tts-pause').addEventListener('click', () => this.togglePause());
             container.querySelector('#tts-stop').addEventListener('click', () => this.stop());
-            
-            // Language selector
-            const langSelect = container.querySelector('#tts-lang-select');
-            langSelect.addEventListener('change', (e) => {
-                const val = e.target.value;
-                this.manualLang = val === 'auto' ? null : val;
-                console.log('TTS language set to:', val);
-                
-                // If currently playing, restart with new language
-                if (this.isPlaying && this.currentText) {
-                    this.stop();
-                    setTimeout(() => this.speak(this.currentText), 100);
-                }
-            });
+        },
+
+        updatePlaybackButtons() {
+            const pauseBtn = this.controlContainer?.querySelector('#tts-pause');
+            if (!pauseBtn) return;
+            if (this.isPaused) {
+                pauseBtn.innerHTML = getVoiceSvgIcon('play');
+                pauseBtn.title = 'Resume';
+                pauseBtn.setAttribute('aria-label', 'Resume');
+            } else {
+                pauseBtn.innerHTML = getVoiceSvgIcon('pause');
+                pauseBtn.title = 'Pause';
+                pauseBtn.setAttribute('aria-label', 'Pause');
+            }
         },
 
         // Show/hide controls
@@ -253,16 +244,16 @@
 
             const utterance = new SpeechSynthesisUtterance(text);
             
-            // Determine language: manual override or auto-detect
-            const targetLang = this.manualLang || this.detectLanguage(text);
-            console.log('TTS target language:', targetLang);
+            // Determine language automatically from the text
+            const targetLang = this.detectLanguage(text);
+            debugLog('TTS target language:', targetLang);
             
             // Get the best voice for this language
             const voice = this.getBestVoice(targetLang);
             
             if (voice) {
                 utterance.voice = voice;
-                console.log(`TTS using voice: ${voice.name} (${voice.lang})`);
+                debugLog(`TTS using voice: ${voice.name} (${voice.lang})`);
             } else {
                 console.warn('No voice found for language:', targetLang, '- using default');
             }
@@ -271,43 +262,37 @@
             utterance.rate = 1.0;
             utterance.pitch = 1.0;
             
-            // Update UI to show detected language
-            const langSelect = this.controlContainer?.querySelector('#tts-lang-select');
-            if (langSelect && !this.manualLang) {
-                // Update the dropdown to show detected language
-                const option = Array.from(langSelect.options).find(opt => 
-                    targetLang.toLowerCase().startsWith(opt.value.toLowerCase())
-                );
-                if (option) {
-                    langSelect.value = option.value;
-                }
-            }
-
             // Event handlers
             utterance.onstart = () => {
                 this.showControls();
                 this.updateStatus('Playing');
+                this.updatePlaybackButtons();
             };
 
             utterance.onpause = () => {
                 this.isPaused = true;
                 this.updateStatus('Paused');
+                this.updatePlaybackButtons();
             };
 
             utterance.onresume = () => {
                 this.isPaused = false;
                 this.updateStatus('Playing');
+                this.updatePlaybackButtons();
             };
 
             utterance.onend = () => {
                 this.isPlaying = false;
                 this.isPaused = false;
+                this.updatePlaybackButtons();
                 this.hideControls();
             };
 
             utterance.onerror = (e) => {
                 console.error('TTS Error:', e);
                 this.isPlaying = false;
+                this.isPaused = false;
+                this.updatePlaybackButtons();
                 this.hideControls();
             };
 
@@ -332,6 +317,7 @@
             this.synthesis.cancel();
             this.isPlaying = false;
             this.isPaused = false;
+            this.updatePlaybackButtons();
             this.hideControls();
         }
     };
@@ -345,6 +331,7 @@
         currentLang: 'en-GB',
         inputField: null,
         micButton: null,
+        listeningIndicator: null,
 
         // Check if STT is supported
         isSupported() {
@@ -359,9 +346,26 @@
             }
 
             this.inputField = inputField;
+            this.currentLang = this.detectPreferredLanguage();
             this.createMicButton();
             this.setupRecognition();
             return true;
+        },
+
+        detectPreferredLanguage() {
+            const browserLang = String(navigator.language || navigator.userLanguage || 'en-GB').trim();
+            if (!browserLang) return 'en-GB';
+
+            const normalized = browserLang.replace('_', '-');
+            const exact = Object.values(EU_LANGUAGES).find((lang) => lang.voiceLang.toLowerCase() === normalized.toLowerCase());
+            if (exact) return exact.voiceLang;
+
+            const prefix = normalized.toLowerCase().split('-')[0];
+            if (EU_LANGUAGES[prefix]) {
+                return EU_LANGUAGES[prefix].voiceLang;
+            }
+
+            return 'en-GB';
         },
 
         // Create microphone button
@@ -370,7 +374,7 @@
             btn.id = 'stt-mic-btn';
             btn.type = 'button';
             btn.className = 'stt-mic-btn';
-            btn.innerHTML = '🎤';
+            btn.innerHTML = getVoiceSvgIcon('mic');
             btn.title = 'Click to speak (hold for continuous)';
             btn.setAttribute('aria-label', 'Voice input');
 
@@ -378,6 +382,18 @@
             if (this.inputField && this.inputField.parentNode) {
                 this.inputField.parentNode.insertBefore(btn, this.inputField.nextSibling);
                 this.micButton = btn;
+
+                const indicator = document.createElement('div');
+                indicator.className = 'stt-listening-indicator hidden';
+                indicator.setAttribute('aria-hidden', 'true');
+                indicator.innerHTML = `
+                    <span class="stt-wave-bar"></span>
+                    <span class="stt-wave-bar"></span>
+                    <span class="stt-wave-bar"></span>
+                    <span class="stt-wave-label">Listening</span>
+                `;
+                btn.insertAdjacentElement('afterend', indicator);
+                this.listeningIndicator = indicator;
 
                 // Event listeners
                 btn.addEventListener('click', () => this.toggleListening());
@@ -429,6 +445,7 @@
                 if (this.inputField) {
                     if (finalTranscript) {
                         this.inputField.value += (this.inputField.value ? ' ' : '') + finalTranscript;
+                        this.inputField.dispatchEvent(new Event('input', { bubbles: true }));
                     }
                     // Show interim results with styling
                     if (interimTranscript) {
@@ -453,12 +470,16 @@
             
             if (this.isListening) {
                 this.micButton.classList.add('listening');
-                this.micButton.innerHTML = '🔴';
                 this.micButton.title = 'Click to stop listening';
+                if (this.listeningIndicator) {
+                    this.listeningIndicator.classList.remove('hidden');
+                }
             } else {
                 this.micButton.classList.remove('listening');
-                this.micButton.innerHTML = '🎤';
                 this.micButton.title = 'Click to speak';
+                if (this.listeningIndicator) {
+                    this.listeningIndicator.classList.add('hidden');
+                }
                 if (this.inputField) {
                     this.inputField.placeholder = 'Ask a question…';
                 }
@@ -527,7 +548,7 @@
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'speak-btn';
-        btn.innerHTML = '🔊';
+        btn.innerHTML = getVoiceSvgIcon('speaker');
         btn.title = 'Listen to this answer';
 
         btn.addEventListener('click', () => {
@@ -565,16 +586,6 @@
         const inputField = document.getElementById('question');
         if (inputField) {
             STTManager.init(inputField);
-        }
-
-        // Language selector change handler
-        const langSelector = document.getElementById('voice-lang');
-        if (langSelector) {
-            langSelector.addEventListener('change', (e) => {
-                const lang = e.target.value;
-                STTManager.currentLang = lang;
-                console.log('Voice language set to:', lang);
-            });
         }
     });
 
