@@ -85,6 +85,75 @@ def _normalize_model(model: Optional[str]) -> str:
     return model or S.VLLM_MODEL
 
 
+def _sanitize_generated_markdown(text: str) -> str:
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = _re.sub(r"<br\s*/?>", "\n", cleaned, flags=_re.IGNORECASE)
+
+    repaired_lines: list[str] = []
+    for raw_line in cleaned.split("\n"):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            repaired_lines.append("")
+            continue
+
+        pipe_count = stripped.count("|")
+        if pipe_count >= 2:
+            is_table_line = (
+                stripped.startswith("|")
+                and stripped.endswith("|")
+            ) or bool(_re.fullmatch(r"\|?[\s:-]+\|[\s|:-]*", stripped))
+
+            if not is_table_line:
+                cells = [cell.strip() for cell in stripped.strip("|").split("|") if cell.strip()]
+                if cells:
+                    repaired_lines.append(f"- {' - '.join(cells)}")
+                    continue
+
+        repaired_lines.append(line)
+
+    cleaned = "\n".join(repaired_lines)
+    cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _extract_cited_numbers(text: str) -> set[int]:
+    cited_nums: set[int] = set()
+
+    for match in _re.finditer(r"\[\s*(\d+)\s*\]", text):
+        cited_nums.add(int(match.group(1)))
+
+    for match in _re.finditer(r"\[\s*([\d\s,–-]+)\s*\]", text):
+        for token in _re.split(r"[,\s–-]+", match.group(1)):
+            if token.isdigit():
+                cited_nums.add(int(token))
+
+    return cited_nums
+
+
+def _strip_orphan_citations(text: str, valid_source_numbers: set[int]) -> str:
+    if not valid_source_numbers:
+        return _re.sub(r"\s*\[\s*[\d\s,–-]+\s*\]", "", text)
+
+    def _replace(match):
+        tokens = [
+            int(token)
+            for token in _re.split(r"[,\s–-]+", match.group(1))
+            if token.isdigit()
+        ]
+        valid_tokens = [token for token in tokens if token in valid_source_numbers]
+
+        if not valid_tokens:
+            return ""
+
+        return "[" + ", ".join(str(token) for token in valid_tokens) + "]"
+
+    cleaned = _re.sub(r"\[\s*([\d\s,–-]+)\s*\]", _replace, text)
+    cleaned = _re.sub(r" +([.,;:!?])", r"\1", cleaned)
+    return cleaned
+
+
 def _cache_params(_temp, _max, _model):
     return {
         "temperature": _temp,
@@ -612,6 +681,9 @@ async def ask_stream(
             }
             for i, s in enumerate(sources)
         ]
+        grounding_state = "general_fallback" if (turn_strategy == "normal" and not contexts) else "euf_supported"
+        if turn_strategy in {"history_only", "conversation_only", "assistant_capabilities"}:
+            grounding_state = turn_strategy
 
         # --- Build prompt with conversation history ---
         _max_tokens = inp.max_tokens if inp.max_tokens is not None else S.MAX_OUTPUT_TOKENS
@@ -643,6 +715,7 @@ async def ask_stream(
                 question=prompt_q,
                 history=history_text,
                 user_profile_context=profile_context,
+                has_relevant_sources=bool(contexts),
             )
         prompt_tokens = _estimate_tokens(prompt)
         prompt_cap = min(
@@ -665,6 +738,8 @@ async def ask_stream(
 
         # --- LLM stream ---
         async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
+            yield x
+        async for x in emit("grounding", {"mode": grounding_state}):
             yield x
 
         t_llm_start = time.perf_counter()
@@ -721,7 +796,7 @@ async def ask_stream(
             await _release()
 
         t_llm_end = time.perf_counter()
-        full_text = "".join(answer_chunks)
+        full_text = _sanitize_generated_markdown("".join(answer_chunks))
 
         # Persist state
         if session_id:
@@ -748,14 +823,11 @@ async def ask_stream(
         # Handle comma-separated S-prefixed lists like [S1, S3, S4, S5] -> [1, 3, 4, 5]
         norm_text = _re.sub(r"\[\s*([sS]\d+(?:\s*[,–-]\s*[sS]?\d+)*)\s*\]", lambda m: "[" + _re.sub(r"[sS]", "", m.group(1)) + "]", norm_text)
 
-        cited_nums = set()
-        for m in _re.finditer(r"\[\s*(\d+)\s*\]", norm_text):
-            cited_nums.add(int(m.group(1)))
-        # Also handle bracketed lists like [1, 2, 3]
-        for m in _re.finditer(r"\[\s*([\d\s,–-]+)\s*\]", norm_text):
-            for tok in _re.split(r"[,\s–-]+", m.group(1)):
-                if tok.isdigit():
-                    cited_nums.add(int(tok))
+        cited_nums = _extract_cited_numbers(norm_text)
+        valid_source_numbers = {s["n"] for s in all_sources}
+        full_text = _strip_orphan_citations(full_text, valid_source_numbers)
+        norm_text = _strip_orphan_citations(norm_text, valid_source_numbers)
+        cited_nums = _extract_cited_numbers(norm_text)
 
         if cited_nums:
             by_num = {s["n"]: s for s in all_sources}

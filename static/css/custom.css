@@ -517,6 +517,36 @@ h1 {
     white-space: nowrap;
 }
 
+.grounding-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 8px;
+    padding: 3px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.2;
+}
+
+.grounding-euf_supported {
+    border-color: #294962;
+    color: #9fc1ff;
+}
+
+.grounding-general_fallback {
+    border-color: #66552a;
+    color: #e6c57a;
+}
+
+.grounding-history_only,
+.grounding-conversation_only,
+.grounding-assistant_capabilities {
+    border-color: #38465d;
+    color: #b7c2d4;
+}
+
 .sr-only {
     position: absolute;
     width: 1px;

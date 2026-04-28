@@ -7,7 +7,8 @@ def build_prompt(
     contexts: list[str],
     question: str,
     history: Optional[str] = None,
-    user_profile_context: Optional[str] = None
+    user_profile_context: Optional[str] = None,
+    has_relevant_sources: bool = True,
 ) -> str:
     """
     Build a natural conversation prompt.
@@ -44,6 +45,29 @@ def build_prompt(
         "using numeric brackets like [1], [2] tied to the source list. "
         "Include citations for factual claims that rely on those sources."
     )
+
+    parts.append(
+        "Output formatting rule: use only valid Markdown. "
+        "Do not use raw HTML such as <br>, <br/>, or inline HTML for layout. "
+        "If you present tabular information, output a valid GitHub-style Markdown table. "
+        "If a clean table is not possible, use a bullet list instead of pseudo-table rows or stray pipe characters."
+    )
+
+    parts.append(
+        "Citation rule: only cite source numbers that exist in the provided Relevant Sources list. "
+        "Do not invent citation numbers, and do not add citations when no relevant sources are present."
+    )
+
+    if has_relevant_sources:
+        parts.append(
+            "If Relevant Sources are present, treat them as the primary grounding material for the answer."
+        )
+    else:
+        parts.append(
+            "No relevant EU-FarmBook source material was found for this turn. "
+            "Say that explicitly in one short sentence, then provide a cautious best-effort answer from your general agricultural knowledge. "
+            "Do not imply that EU-FarmBook or the provided sources support that fallback answer, and do not add citations when no relevant sources are present."
+        )
 
     parts.append(
         "If uploaded PDF context is present in Relevant Sources, do not say you cannot access files. "

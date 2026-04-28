@@ -1056,6 +1056,7 @@ let statusLeft = null;
 let statusRight = null;
 let lastAssistantFollowupQuestion = '';
 let nextTurnMeta = null;
+let pendingGroundingMode = '';
 
 function updateComposerPrimaryButton(isStreaming) {
     if (!btnSend) return;
@@ -1297,6 +1298,32 @@ function attachAssistantFooter(bubble, latencyMs, stateText = 'Completed.') {
     right.textContent = (latencyMs != null && isFinite(latencyMs))
         ? `Thought for ${formatDuration(latencyMs)}`
         : '';
+}
+
+function renderGroundingBadge(bubble, mode) {
+    if (!bubble || !bubble.parentElement || !mode) return;
+    const container = bubble.parentElement;
+    const existing = container.querySelector('.grounding-badge');
+    if (existing) existing.remove();
+
+    const badge = document.createElement('div');
+    badge.className = `grounding-badge grounding-${mode}`;
+
+    if (mode === 'euf_supported') {
+        badge.textContent = 'EUF-supported';
+    } else if (mode === 'general_fallback') {
+        badge.textContent = 'General guidance';
+    } else if (mode === 'history_only') {
+        badge.textContent = 'Conversation recap';
+    } else if (mode === 'conversation_only') {
+        badge.textContent = 'Conversation-based';
+    } else if (mode === 'assistant_capabilities') {
+        badge.textContent = 'Capability answer';
+    } else {
+        return;
+    }
+
+    container.appendChild(badge);
 }
 
 function addMessage(role, text) {
@@ -1559,6 +1586,7 @@ function startStream(q) {
     pendingSources = [];
     statusNode = null;
     serverTimingMs = null;
+    pendingGroundingMode = '';
     clientStartTs = Date.now();
 
     updateComposerPrimaryButton(true);
@@ -1648,6 +1676,15 @@ function startStream(q) {
         }
     });
 
+    es.addEventListener('grounding', (e) => {
+        try {
+            const parsed = JSON.parse(e.data);
+            pendingGroundingMode = (parsed && parsed.mode) ? String(parsed.mode) : '';
+        } catch {
+            pendingGroundingMode = '';
+        }
+    });
+
     es.addEventListener('timing', (e) => {
         try {
             const t = JSON.parse(e.data);
@@ -1666,6 +1703,7 @@ function startStream(q) {
 
         const ms = (serverTimingMs != null ? serverTimingMs : (Date.now() - clientStartTs));
         attachAssistantFooter(answerNode, ms, cancelled ? 'Stopped.' : 'Completed.');
+        renderGroundingBadge(answerNode, pendingGroundingMode);
         attachResponseActions(answerNode);
         renderSourcesInline(answerNode, pendingSources);
 

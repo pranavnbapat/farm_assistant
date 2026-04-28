@@ -1,13 +1,94 @@
 #!/bin/bash
+set -euo pipefail
 
 # Farm Assistant Run Script
-# Usage: ./run.sh [local|docker] [local|dev|prd]
+# Preferred usage:
+#   ./run.sh --mode local --backend dev
+#   ./run.sh --mode local --backend prd
+#   ./run.sh --mode local
+#   ./run.sh --mode docker
+#
+# Backward-compatible shortcuts:
+#   ./run.sh local dev
+#   ./run.sh local prd
+#   ./run.sh local
+#   ./run.sh docker
+#   ./run.sh dev
+#   ./run.sh prd
 
-MODE=${1:-local}
-BACKEND_PROFILE=${2:-local}
+MODE="local"
+BACKEND_PROFILE="local"
 
 DEV_BACKEND_BASE="https://backend-admin.dev.farmbook.ugent.be"
 PRD_BACKEND_BASE="https://backend-admin.prd.farmbook.ugent.be"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./run.sh --mode local --backend [local|dev|prd]
+  ./run.sh --mode docker
+
+Shortcuts:
+  ./run.sh local [local|dev|prd]
+  ./run.sh docker
+  ./run.sh dev
+  ./run.sh prd
+
+Examples:
+  ./run.sh --mode local --backend dev
+  ./run.sh --mode local --backend prd
+  ./run.sh local dev
+  ./run.sh prd
+  ./run.sh docker
+EOF
+}
+
+parse_args() {
+    if [ "$#" -eq 0 ]; then
+        return
+    fi
+
+    case "${1:-}" in
+        dev|prd)
+            MODE="local"
+            BACKEND_PROFILE="$1"
+            return
+            ;;
+        local|docker)
+            MODE="$1"
+            if [ "$#" -ge 2 ]; then
+                BACKEND_PROFILE="$2"
+            fi
+            return
+            ;;
+    esac
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --mode)
+                [ "$#" -ge 2 ] || { echo "Missing value for --mode"; usage; exit 1; }
+                MODE="$2"
+                shift 2
+                ;;
+            --backend)
+                [ "$#" -ge 2 ] || { echo "Missing value for --backend"; usage; exit 1; }
+                BACKEND_PROFILE="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown argument: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
+parse_args "$@"
 
 if [ "$MODE" == "docker" ]; then
     echo "Starting Farm Assistant with Docker Compose..."
@@ -42,12 +123,8 @@ elif [ "$MODE" == "local" ]; then
             echo "  CHAT_BACKEND_URL=$CHAT_BACKEND_URL"
             ;;
         *)
-            echo "Usage: ./run.sh [local|docker] [local|dev|prd]"
-            echo ""
-            echo "Examples:"
-            echo "  ./run.sh local        # local UI + backend values from .env"
-            echo "  ./run.sh local dev    # local UI + dev Django backend"
-            echo "  ./run.sh local prd    # local UI + prd Django backend"
+            echo "Invalid backend profile: $BACKEND_PROFILE"
+            usage
             exit 1
             ;;
     esac
@@ -55,15 +132,7 @@ elif [ "$MODE" == "local" ]; then
     # Run the application
     uvicorn app.main:app --reload --host 0.0.0.0 --port 18000 --timeout-keep-alive 120
 else
-    echo "Usage: ./run.sh [local|docker] [local|dev|prd]"
-    echo ""
-    echo "Options:"
-    echo "  local   - Run with Uvicorn (development)"
-    echo "  docker  - Run with Docker Compose"
-    echo ""
-    echo "Backend profile (only used with local):"
-    echo "  local   - Use backend values from .env"
-    echo "  dev     - Override to dev Django backend"
-    echo "  prd     - Override to prd Django backend"
+    echo "Invalid mode: $MODE"
+    usage
     exit 1
 fi

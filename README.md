@@ -96,22 +96,33 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ### Running With `run.sh`
 
 ```bash
-./run.sh local
+./run.sh --mode local --backend local
 ```
 
-Supported modes:
+Preferred explicit syntax:
+
+```bash
+./run.sh --mode local --backend local
+./run.sh --mode local --backend dev
+./run.sh --mode local --backend prd
+./run.sh --mode docker
+```
+
+Supported shortcuts:
 
 ```bash
 ./run.sh local
 ./run.sh local dev
 ./run.sh local prd
+./run.sh dev
+./run.sh prd
 ./run.sh docker
 ```
 
-- `local`: runs the FastAPI UI locally and uses `.env` backend values
-- `local dev`: runs the FastAPI UI locally and points auth/chat traffic at the dev Django backend
-- `local prd`: runs the FastAPI UI locally and points auth/chat traffic at the prd Django backend
-- `docker`: runs the repo Docker Compose setup
+- `--mode local --backend local`: runs the FastAPI UI locally and uses `.env` backend values
+- `--mode local --backend dev`: runs the FastAPI UI locally and points auth/chat traffic at the dev Django backend
+- `--mode local --backend prd`: runs the FastAPI UI locally and points auth/chat traffic at the prd Django backend
+- `--mode docker`: runs the repo Docker Compose setup
 
 ## Configuration
 
@@ -128,6 +139,14 @@ All runtime configuration is read from environment variables via `app/config.py`
 | `ENABLE_DOCS` | Enable Swagger UI | `false` |
 | `ENABLE_REDOC` | Enable ReDoc | `false` |
 | `CHAT_BACKEND_URL` | Explicit Django backend base URL override | empty |
+| `AUTH_BACKEND_URL` | Explicit Django auth backend base URL override | empty |
+| `ADMIN_API_TOKEN` | Optional bearer token forwarded to upstream login | empty |
+| `UPSTREAM_BASIC_AUTH_USER` | Optional HTTP Basic Auth username for backend-admin gateway | empty |
+| `UPSTREAM_BASIC_AUTH_PASSWORD` | Optional HTTP Basic Auth password for backend-admin gateway | empty |
+| `BACKEND_ADMIN_CORE_DEV_USERNAME` | Optional dev-only HTTP Basic Auth username for backend-admin gateway | empty |
+| `BACKEND_ADMIN_CORE_DEV_PASSWORD` | Optional dev-only HTTP Basic Auth password for backend-admin gateway | empty |
+| `BACKEND_ADMIN_CORE_PRD_USERNAME` | Optional prd-only HTTP Basic Auth username for backend-admin gateway | empty |
+| `BACKEND_ADMIN_CORE_PRD_PASSWORD` | Optional prd-only HTTP Basic Auth password for backend-admin gateway | empty |
 
 ### OpenSearch
 
