@@ -93,6 +93,10 @@ class ChatMessageStreamIn(BaseModel):
     # for this turn and skips loading messages from the persisted session.
     # Used for regenerate / edit-and-resend so the LLM doesn't see the discarded turn.
     replace_history: bool = False
+    # When true, do not inject the user's profile/memory context into the prompt
+    # for this turn and do not write back any new profile facts/notes.
+    # ChatGPT calls this "pause memory for this chat".
+    pause_personalization: bool = False
 
 
 class UserProfilePatchIn(BaseModel):

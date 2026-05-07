@@ -28,11 +28,32 @@
                         <span class="user-email" id="sidebar-user-email"></span>
                     </div>
                 </div>
+                <button id="memory-btn" class="footer-icon-btn" title="Manage memory" aria-label="Manage memory">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v1a4 4 0 0 0-4 4 4 4 0 0 0 4 4v1a4 4 0 1 0 8 0v-1a4 4 0 0 0 4-4 4 4 0 0 0-4-4V7a4 4 0 0 0-4-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
                 <button id="logout-btn" class="logout-btn" title="Logout">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </button>
             </div>
         </aside>
+
+        <!-- Memory management modal -->
+        <div id="memory-modal" class="memory-modal hidden" aria-hidden="true" role="dialog" aria-labelledby="memory-modal-title">
+            <div class="memory-modal-backdrop" data-close-memory></div>
+            <div class="memory-modal-panel">
+                <div class="memory-modal-header">
+                    <h3 id="memory-modal-title">Memory</h3>
+                    <button type="button" class="memory-modal-close" data-close-memory aria-label="Close">×</button>
+                </div>
+                <p class="memory-modal-subtitle">
+                    Things the assistant has learned about you across conversations.
+                    Delete anything you don't want it to remember.
+                </p>
+                <div id="memory-modal-body" class="memory-modal-body">
+                    <div class="memory-empty">Loading…</div>
+                </div>
+            </div>
+        </div>
 
         <!-- Main Content -->
         <div class="wrap">
@@ -44,6 +65,10 @@
                     <input id="pdf-file" type="file" accept="application/pdf" class="hidden" />
                     <div class="composer-inner">
                         <button id="upload-pdf" type="button" title="Upload PDF" aria-label="Upload PDF"></button>
+                        <button id="pause-memory-btn" type="button" class="composer-icon-btn" title="Pause memory for the next message" aria-label="Pause memory" aria-pressed="false">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v1a4 4 0 0 0-4 4 4 4 0 0 0 4 4v1a4 4 0 1 0 8 0v-1a4 4 0 0 0 4-4 4 4 0 0 0-4-4V7a4 4 0 0 0-4-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            <span class="composer-icon-strike" aria-hidden="true"></span>
+                        </button>
                         <textarea id="question" placeholder="Ask a question…" autocomplete="off" rows="1" maxlength="4000"></textarea>
                         <div class="composer-actions">
                             <button id="send" type="submit" aria-label="Send message"></button>

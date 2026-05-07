@@ -305,6 +305,159 @@ h1 {
     color: var(--text-primary);
 }
 
+/* Sidebar memory button shares the logout-btn shape */
+.footer-icon-btn {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+.footer-icon-btn svg { width: 18px; height: 18px; }
+.footer-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Composer icon button (pause-memory toggle) */
+.composer-icon-btn {
+    position: relative;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+}
+.composer-icon-btn svg { width: 18px; height: 18px; }
+.composer-icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.composer-icon-btn .composer-icon-strike {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    top: 50%;
+    height: 2px;
+    background: currentColor;
+    transform: rotate(-30deg);
+    transform-origin: center;
+    border-radius: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+.composer-icon-btn.is-active {
+    color: var(--accent, #1f6feb);
+    background: rgba(31, 111, 235, 0.10);
+}
+.composer-icon-btn.is-active .composer-icon-strike { opacity: 1; }
+
+/* Memory management modal */
+.memory-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.memory-modal.hidden { display: none; }
+.memory-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+}
+.memory-modal-panel {
+    position: relative;
+    width: min(560px, calc(100vw - 32px));
+    max-height: min(80vh, 720px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary, #fff);
+    color: var(--text-primary);
+    border-radius: 14px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+    padding: 18px 18px 12px;
+}
+.memory-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+.memory-modal-header h3 { margin: 0; font-size: 17px; }
+.memory-modal-close {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+.memory-modal-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.memory-modal-subtitle {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+.memory-modal-body {
+    overflow-y: auto;
+    flex: 1;
+    padding-right: 4px;
+}
+.memory-empty {
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 24px 4px;
+    text-align: center;
+}
+.memory-list { list-style: none; margin: 0; padding: 0; }
+.memory-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto;
+    column-gap: 12px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--border-color, rgba(0,0,0,0.08));
+}
+.memory-item:last-child { border-bottom: none; }
+.memory-text { grid-column: 1; grid-row: 1; font-size: 14px; line-height: 1.4; }
+.memory-meta {
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.memory-delete-btn {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    border: 1px solid var(--border-color, rgba(0,0,0,0.18));
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 14px;
+    padding: 4px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.memory-delete-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.memory-delete-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ===========================
    Main Content Area
    =========================== */

@@ -452,6 +452,44 @@ async def api_add_user_fact(body: UserFactCreateIn, request: Request):
     )
 
 
+@app.get("/chatbot/api/users/me/memory", tags=["User Profile"], summary="List the current user's free-form memory notes")
+async def api_get_user_memory(request: Request, limit: int = 20):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/memory/"
+    return await _proxy_json_request(
+        "GET",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        params={"limit": limit},
+    )
+
+
+@app.post("/chatbot/api/users/me/memory", tags=["User Profile"], summary="Add a free-form memory note for the current user")
+async def api_add_user_memory(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/memory/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        json_body=await request.json(),
+    )
+
+
+@app.delete("/chatbot/api/users/me/memory/{note_id}", tags=["User Profile"], summary="Delete a single memory note by id")
+async def api_delete_user_memory(note_id: int, request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/user/memory/{int(note_id)}/"
+    return await _proxy_json_request(
+        "DELETE",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+    )
+
+
 @app.post("/chatbot/api/users/me/profile/build", tags=["User Profile"], summary="Build or update the current user's profile from a conversation turn")
 async def api_build_user_profile(body: UserProfileBuildIn, request: Request):
     auth_token = request.headers.get("Authorization", "")

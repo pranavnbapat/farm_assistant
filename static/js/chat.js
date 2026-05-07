@@ -1318,12 +1318,16 @@ function renderGroundingBadge(bubble, mode) {
         badge.textContent = 'EUF-supported';
     } else if (mode === 'general_fallback') {
         badge.textContent = 'General guidance';
+    } else if (mode === 'general_knowledge') {
+        badge.textContent = 'General knowledge';
     } else if (mode === 'history_only') {
         badge.textContent = 'Conversation recap';
     } else if (mode === 'conversation_only') {
         badge.textContent = 'Conversation-based';
     } else if (mode === 'assistant_capabilities') {
         badge.textContent = 'Capability answer';
+    } else if (mode === 'off_topic') {
+        badge.textContent = 'Off-topic';
     } else {
         return;
     }
@@ -1867,6 +1871,7 @@ function startStream(q, opts = {}) {
     const clientHistory = collectClientHistoryForRequest();
     if (clientHistory.length) body.client_history = clientHistory;
     if (replaceHistory) body.replace_history = true;
+    if (pausePersonalizationActive()) body.pause_personalization = true;
 
     // Attachments are now bound to this sent user turn; clear pending list in composer.
     activeDocIds = [];
@@ -2180,6 +2185,165 @@ updateComposerPrimaryButton(false);
     if (chatId) {
         await openSession(chatId).catch(console.error);
     }
+})();
+
+// -----------------------------
+// Pause personalization (memory off for next message)
+// -----------------------------
+const PAUSE_MEMORY_LS_KEY = 'fa_pause_personalization';
+
+function pausePersonalizationActive() {
+    return localStorage.getItem(PAUSE_MEMORY_LS_KEY) === '1';
+}
+
+function setPausePersonalization(value) {
+    if (value) {
+        localStorage.setItem(PAUSE_MEMORY_LS_KEY, '1');
+    } else {
+        localStorage.removeItem(PAUSE_MEMORY_LS_KEY);
+    }
+    syncPauseMemoryButton();
+}
+
+function syncPauseMemoryButton() {
+    const btn = document.getElementById('pause-memory-btn');
+    if (!btn) return;
+    const active = pausePersonalizationActive();
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    btn.title = active
+        ? 'Memory is paused for the next message. Click to resume.'
+        : 'Pause memory for the next message';
+}
+
+(function wirePauseMemoryButton() {
+    const btn = document.getElementById('pause-memory-btn');
+    if (!btn) return;
+    btn.addEventListener('click', () => setPausePersonalization(!pausePersonalizationActive()));
+    syncPauseMemoryButton();
+})();
+
+// -----------------------------
+// Memory management modal
+// -----------------------------
+const MEMORY_BASE = '/chatbot/api/users/me/memory';
+
+async function fetchMemoryNotes() {
+    if (!authToken) return [];
+    try {
+        const res = await fetch(`${MEMORY_BASE}?limit=50`, {
+            method: 'GET',
+            headers: backendHeaders(),
+        });
+        if (!res.ok) return [];
+        const data = await res.json().catch(() => ({}));
+        return Array.isArray(data?.results) ? data.results : [];
+    } catch (e) {
+        console.warn('Failed to load memory notes', e);
+        return [];
+    }
+}
+
+async function deleteMemoryNote(noteId) {
+    try {
+        const res = await fetch(`${MEMORY_BASE}/${encodeURIComponent(noteId)}`, {
+            method: 'DELETE',
+            headers: backendHeaders(),
+        });
+        return res.ok;
+    } catch (e) {
+        console.warn('Failed to delete memory note', e);
+        return false;
+    }
+}
+
+function renderMemoryList(notes) {
+    const body = document.getElementById('memory-modal-body');
+    if (!body) return;
+    if (!notes.length) {
+        body.innerHTML = `<div class="memory-empty">Nothing remembered yet. Ask substantive questions and the assistant will start building a memory.</div>`;
+        return;
+    }
+    body.innerHTML = '';
+    const list = document.createElement('ul');
+    list.className = 'memory-list';
+    notes.forEach((note) => {
+        const li = document.createElement('li');
+        li.className = 'memory-item';
+        li.dataset.noteId = String(note.id);
+
+        const text = document.createElement('div');
+        text.className = 'memory-text';
+        text.textContent = note.note_text || '';
+
+        const meta = document.createElement('div');
+        meta.className = 'memory-meta';
+        const conf = typeof note.confidence === 'number'
+            ? `${Math.round(note.confidence * 100)}% confidence`
+            : '';
+        const lang = note.source_language && note.source_language !== 'en'
+            ? ` · ${String(note.source_language).toUpperCase()}`
+            : '';
+        meta.textContent = `${conf}${lang}`.trim();
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'memory-delete-btn';
+        del.title = 'Forget this';
+        del.setAttribute('aria-label', 'Forget this');
+        del.textContent = 'Forget';
+        del.addEventListener('click', async () => {
+            del.disabled = true;
+            const ok = await deleteMemoryNote(note.id);
+            if (ok) {
+                li.remove();
+                if (!document.querySelector('.memory-list .memory-item')) {
+                    renderMemoryList([]);
+                }
+            } else {
+                del.disabled = false;
+                del.textContent = 'Failed';
+                setTimeout(() => { del.textContent = 'Forget'; }, 1500);
+            }
+        });
+
+        li.appendChild(text);
+        li.appendChild(meta);
+        li.appendChild(del);
+        list.appendChild(li);
+    });
+    body.appendChild(list);
+}
+
+async function openMemoryModal() {
+    const modal = document.getElementById('memory-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    const body = document.getElementById('memory-modal-body');
+    if (body) body.innerHTML = `<div class="memory-empty">Loading…</div>`;
+    const notes = await fetchMemoryNotes();
+    renderMemoryList(notes);
+}
+
+function closeMemoryModal() {
+    const modal = document.getElementById('memory-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+}
+
+(function wireMemoryModal() {
+    const openBtn = document.getElementById('memory-btn');
+    if (openBtn) {
+        openBtn.addEventListener('click', openMemoryModal);
+    }
+    document.querySelectorAll('[data-close-memory]').forEach((el) => {
+        el.addEventListener('click', closeMemoryModal);
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeMemoryModal();
+    });
 })();
 
 window.addEventListener('popstate', async () => {

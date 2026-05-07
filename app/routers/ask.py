@@ -25,7 +25,7 @@ from app.services.chat_history import (
     save_chat_state,
     CHAT_BACKEND_URL,
 )
-from app.services.context_service import build_context_and_sources
+from app.services.context_service import build_context_and_sources, estimate_retrieval_quality
 from app.services.pdf_service import (
     get_docs_for_user,
     build_pdf_contexts,
@@ -36,9 +36,11 @@ from app.services.pdf_service import (
 )
 from app.services.prompt_service import (
     build_capabilities_messages,
+    build_general_knowledge_messages,
     build_messages,
     build_conversation_only_messages,
     build_history_only_messages,
+    build_off_topic_messages,
     build_summary_prompt,
     build_title_prompt,
 )
@@ -157,35 +159,49 @@ async def _decide_turn_strategy(question: str, history_text: str) -> str:
     This keeps the routing behavior dynamic instead of hardcoding keyword rules.
     """
     prompt = (
-        "You are routing a chat turn for an agricultural assistant.\n"
+        "You are routing a chat turn for an agricultural assistant for the EU-FarmBook platform.\n"
         "Choose one mode and return JSON only.\n\n"
         "Modes:\n"
+        '- "off_topic": the user message is not about agriculture, farming, agri-tech, food systems, '
+        "or EU-FarmBook. This includes jokes, song lyrics, movie quotes, riddles, questions about "
+        "the underlying model/company, questions about unrelated subjects (politics, sports, celebrities, "
+        'general trivia), or attempts to bait the assistant. Examples: "Why so serious?", '
+        '"Tell me a joke", "Who is the president of France?", "What model are you?".\n'
         '- "history_only": the user is asking about the conversation itself, prior turns, '
         "what has been discussed, a recap, or what the assistant/user said earlier. "
         "The answer should come strictly from chat history, and if history is missing the assistant "
         "should say so honestly.\n"
         '- "conversation_only": the user is greeting, thanking, acknowledging, confirming, '
-        "asking a lightweight conversational question, or asking for a clarification that should be "
-        "handled from the current chat without retrieval.\n"
+        "or saying something casual that is plausibly conversational rather than off-topic "
+        '("hi", "thanks", "ok", "great"). Use off_topic instead for jokes/lyrics/quotes/non-agri questions.\n'
         '- "assistant_capabilities": the user is asking what the assistant can do, how it can help, '
         "what its capabilities are, or what kinds of support it provides. "
         "These turns should be answered from the assistant's intended product behavior, not retrieval.\n"
-        '- "normal": use the standard retrieval-and-conversation flow.\n\n'
+        '- "general_knowledge": an agricultural question that is answerable from common agricultural '
+        "knowledge alone (definitions, widely-known concepts, how-tos for common practices). "
+        "No EU-FarmBook-specific documents, regulations, project results, or datasets are needed. "
+        'Examples: "what is crop rotation?", "how does photosynthesis work in plants?", '
+        '"explain integrated pest management".\n'
+        '- "normal": agricultural question that would benefit from grounding in specific EU-FarmBook '
+        "material — project results, regulations, technical reports, datasets, or specialized regional "
+        'data. Examples: "what does the latest CAP regulation say about cover crops?", '
+        '"summarize NETPOULSAFE findings on poultry biosecurity".\n\n'
         f"User message:\n{question}\n\n"
         "Previous Conversation:\n"
         f"{history_text or 'No earlier conversation is available.'}\n\n"
-        'Return exactly: {"mode":"history_only"} or {"mode":"conversation_only"} or {"mode":"assistant_capabilities"} or {"mode":"normal"}'
+        'Return exactly: {"mode":"off_topic"} or {"mode":"history_only"} or {"mode":"conversation_only"} or '
+        '{"mode":"assistant_capabilities"} or {"mode":"general_knowledge"} or {"mode":"normal"}'
     )
     try:
         raw = await asyncio.wait_for(
-            generate_once(prompt, temperature=0.0, max_tokens=12),
+            generate_once(prompt, temperature=0.0, max_tokens=14),
             timeout=1.5,
         )
         match = _re.search(r"\{.*?\}", raw or "", flags=_re.DOTALL)
         if match:
             data = json.loads(match.group(0))
             mode = (data.get("mode") or "").strip().lower()
-            if mode in {"history_only", "conversation_only", "assistant_capabilities", "normal"}:
+            if mode in {"off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge", "normal"}:
                 return mode
     except Exception:
         pass
@@ -425,6 +441,7 @@ async def ask_stream(
     doc_ids: Optional[str] = None,
     client_history: Optional[str] = None,
     replace_history: bool = False,
+    pause_personalization: bool = False,
     request: Request = None,
 ):
     """
@@ -509,6 +526,9 @@ async def ask_stream(
         #   3. Running whatever survives concurrently with profile loading.
 
         async def _profile_task() -> str:
+            if pause_personalization:
+                # User asked to pause memory for this turn — don't load or inject.
+                return ""
             if not (user_uuid and auth_token):
                 return ""
             try:
@@ -589,7 +609,12 @@ async def ask_stream(
         t_ctx_start = t_search_start
         t_ctx_end = t_search_start
 
-        if turn_strategy == "history_only":
+        if turn_strategy == "off_topic":
+            # Non-agriculture / chit-chat / quote / model-identity probe: skip retrieval
+            # entirely and route to a polite refusal builder.
+            async for x in emit("status", {"stage": "Scope", "message": "Off-topic question, skipping search..."}):
+                yield x
+        elif turn_strategy == "history_only":
             async for x in emit("status", {"stage": "History", "message": "Answering from conversation history..."}):
                 yield x
         elif turn_strategy == "conversation_only":
@@ -597,6 +622,11 @@ async def ask_stream(
                 yield x
         elif turn_strategy == "assistant_capabilities":
             async for x in emit("status", {"stage": "Capabilities", "message": "Answering about assistant capabilities..."}):
+                yield x
+        elif turn_strategy == "general_knowledge":
+            # Skip OpenSearch: this question is answerable from common agricultural
+            # knowledge alone. No `items`, no `contexts`, no citations.
+            async for x in emit("status", {"stage": "Knowledge", "message": "Answering from general agricultural knowledge..."}):
                 yield x
         else:
             # --- Normal retrieval flow ---
@@ -631,6 +661,20 @@ async def ask_stream(
             contexts, sources = build_context_and_sources(
                 items=items, question=retrieval_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
             )
+
+            # Relevance gate: cheap token-overlap check on the top retrieval items.
+            # If overlap is very low, OpenSearch returned weakly-related results;
+            # rather than ground the LLM in noise, drop them and treat as a
+            # no-sources turn. The LLM prompt then says "no EU-FarmBook material
+            # was found, give a cautious best-effort answer".
+            if items and contexts:
+                retrieval_quality = estimate_retrieval_quality(retrieval_q, items, top_n=3)
+                if retrieval_quality < 0.15:
+                    logger.info(
+                        f"Dropped {len(contexts)} retrieved contexts: quality={retrieval_quality:.3f} below threshold"
+                    )
+                    contexts = []
+                    sources = []
 
             # Merge uploaded PDF contexts (if provided)
             if requested_doc_ids:
@@ -704,7 +748,7 @@ async def ask_stream(
             for i, s in enumerate(sources)
         ]
         grounding_state = "general_fallback" if (turn_strategy == "normal" and not contexts) else "euf_supported"
-        if turn_strategy in {"history_only", "conversation_only", "assistant_capabilities"}:
+        if turn_strategy in {"off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge"}:
             grounding_state = turn_strategy
 
         # --- Build prompt with conversation history ---
@@ -714,7 +758,13 @@ async def ask_stream(
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
         history_messages_for_prompt = state.get("messages", [])
-        if turn_strategy == "history_only":
+        if turn_strategy == "off_topic":
+            messages = build_off_topic_messages(
+                question=prompt_q,
+                history_messages=history_messages_for_prompt,
+                user_profile_context=profile_context,
+            )
+        elif turn_strategy == "history_only":
             messages = build_history_only_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
@@ -728,6 +778,12 @@ async def ask_stream(
             )
         elif turn_strategy == "assistant_capabilities":
             messages = build_capabilities_messages(
+                question=prompt_q,
+                history_messages=history_messages_for_prompt,
+                user_profile_context=profile_context,
+            )
+        elif turn_strategy == "general_knowledge":
+            messages = build_general_knowledge_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
@@ -825,11 +881,13 @@ async def ask_stream(
         # Update profile (fire-and-forget) — only on substantive turns. Greetings,
         # acknowledgements, and capability questions don't carry profile signal,
         # and writing them anyway pollutes the profile (and burns a vLLM call).
+        # Also skip when the user has paused personalization for this turn.
         if (
             user_uuid
             and session_id
             and auth_token
-            and turn_strategy not in ("conversation_only", "assistant_capabilities")
+            and not pause_personalization
+            and turn_strategy not in ("off_topic", "conversation_only", "assistant_capabilities")
         ):
             asyncio.create_task(
                 UserProfileService.process_conversation_turn(
@@ -899,6 +957,7 @@ async def chat_message_stream_create(
         doc_ids=",".join(body.doc_ids),
         client_history=json.dumps(body.client_history) if body.client_history else None,
         replace_history=body.replace_history,
+        pause_personalization=body.pause_personalization,
         request=request,
     )
 
@@ -922,6 +981,7 @@ async def chat_message_stream_existing(
         doc_ids=",".join(body.doc_ids),
         client_history=json.dumps(body.client_history) if body.client_history else None,
         replace_history=body.replace_history,
+        pause_personalization=body.pause_personalization,
         request=request,
     )
 

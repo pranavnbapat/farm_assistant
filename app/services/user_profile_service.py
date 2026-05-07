@@ -126,7 +126,7 @@ Extract and respond ONLY with valid JSON in this exact format:
         }}
     ],
     "memory_notes": [
-        "free-form, self-contained sentence (in English) capturing something worth remembering about this user that does NOT fit the structured fact categories above"
+        "free-form sentence (in English) capturing an EXPLICIT fact the user stated about themselves that does NOT fit the structured fact categories above"
     ],
     "communication_preferences": {{
         "style": "detailed|concise|technical|null",
@@ -154,7 +154,13 @@ Important Rules:
    - topic: Areas of interest for future learning
    - goal: User's objectives and plans
 7. Capture communication preferences if user mentions them ("explain simply", "technical details", etc.)
-8. Use `memory_notes` for things worth remembering that don't fit the structured `facts` categories. Examples: dietary restrictions, ongoing projects, multi-clause goals, communication preferences phrased as prose, family or business context, idiosyncratic preferences. Each note must be a complete standalone sentence (in English). Leave the array empty if nothing free-form is worth keeping.
+8. `memory_notes` are for long-term memory and are subject to a STRICT bar:
+   - Each note must reflect something the user EXPLICITLY stated about themselves in this message. Direct first-person assertions only ("I am vegan", "I'm writing a thesis on X", "skip the preamble in your answers", "my farm is run by my two daughters").
+   - DO NOT speculate about the user's emotional state, mood, frustration, intentions, motivations, or interests. No inferences, no profiling, no "user may be...", "user is likely...", "user seems to be...".
+   - DO NOT summarize what the conversation is about. The notes are about the user as a person, not about the current topic.
+   - DO NOT create a note that uses hedging words like "may", "might", "possibly", "likely", "perhaps", "seems", "appears", "could be", "indicating".
+   - DO NOT invent facts. If the message contains nothing the user explicitly stated about themselves, return an empty array.
+   - When in doubt, leave it out. The default state of `memory_notes` is `[]`. Only add when the user has unmistakably told you a stable fact about themselves.
 
 Examples:
 Input (German): "Ich habe ein Problem mit Blattläusen auf meinen Tomaten in Bayern"
@@ -395,6 +401,43 @@ Output: {{
         except httpx.HTTPError as e:
             logger.warning(f"Failed to get memory notes: {e}")
         return []
+
+    # Hedging words that indicate the LLM is speculating rather than reporting an
+    # explicit user statement. Notes containing these on the property side of the
+    # sentence are rejected at the Python layer regardless of the prompt.
+    _HEDGE_PATTERNS = (
+        " may be ", " may have ", " might be ", " might have ",
+        " possibly ", " likely ", " perhaps ", " seems to ", " seems ",
+        " appears to ", " appears ", " could be ", " indicating ",
+        " suggesting ", " inferred ", " probably ",
+    )
+
+    # Memory note will be rejected if the note text mentions any of these — the
+    # extraction is supposed to be about the user as a person, not the LLM
+    # profiling the user's emotional state.
+    _SPECULATIVE_TOPICS = (
+        "emotional", "frustration", "frustrated", "distress", "mood",
+        "feeling", "feels ", " feel ", "anxious", "anxiety",
+        "interested in", "exploring", "seeking clarification",
+    )
+
+    @classmethod
+    def _looks_like_explicit_fact(cls, note_text: str) -> bool:
+        """
+        Reject memory notes that read like LLM speculation rather than an
+        explicit user statement. Cheap, language-rough check; works alongside
+        the prompt-level instructions.
+        """
+        text = (note_text or "").strip().lower()
+        if not text or len(text) < 8:
+            return False
+        # Pad with spaces so leading/trailing word checks via " word " hit cleanly.
+        padded = f" {text} "
+        if any(h in padded for h in cls._HEDGE_PATTERNS):
+            return False
+        if any(t in text for t in cls._SPECULATIVE_TOPICS):
+            return False
+        return True
 
     @classmethod
     async def delete_memory_note(cls, note_id: int, auth_token: str) -> bool:
@@ -675,27 +718,53 @@ Output: {{
             result["facts_added"] = facts_added
 
             # Free-form memory notes (ChatGPT-style memory channel).
-            existing_notes = await cls.get_memory_notes(user_uuid, auth_token, limit=50)
+            # Three-stage gate: prompt-level rule, hedging-word filter, semantic-dedup
+            # against existing notes. Plus a hard cap so memory can't grow forever.
+            MEMORY_NOTE_CAP = 30
+            DEDUP_THRESHOLD = 0.55  # Lower than fact dedup; more aggressive merging.
+
+            existing_notes = await cls.get_memory_notes(user_uuid, auth_token, limit=MEMORY_NOTE_CAP)
             existing_note_dicts = [{"text": n.get("note_text", "")} for n in existing_notes]
+            at_cap = len(existing_notes) >= MEMORY_NOTE_CAP
             notes_added = 0
+            notes_rejected_speculative = 0
+
             for note_text in extracted.memory_notes:
-                pseudo_fact = UserFact(category="note", text=note_text)
-                if cls.is_duplicate_fact(pseudo_fact, existing_note_dicts):
-                    logger.debug(f"Skipped duplicate memory note: {note_text[:50]}...")
+                if not cls._looks_like_explicit_fact(note_text):
+                    notes_rejected_speculative += 1
+                    logger.info(f"Rejected speculative memory note: {note_text[:80]}...")
                     continue
+
+                pseudo_fact = UserFact(category="note", text=note_text)
+                if cls.is_duplicate_fact(pseudo_fact, existing_note_dicts, threshold=DEDUP_THRESHOLD):
+                    logger.debug(f"Skipped duplicate-or-similar memory note: {note_text[:50]}...")
+                    continue
+
+                if at_cap:
+                    # User is at the soft cap; refuse new notes rather than evict at
+                    # random. The user can prune via the memory UI when they want
+                    # the model to remember something else.
+                    logger.info(f"Memory at cap ({MEMORY_NOTE_CAP}); skipped: {note_text[:60]}...")
+                    continue
+
                 success = await cls.add_memory_note(
                     user_uuid=user_uuid,
                     note_text=note_text,
                     auth_token=auth_token,
-                    confidence=0.85,
+                    confidence=0.9,
                     source_language=extracted.detected_language,
                     session_uuid=session_uuid,
                 )
                 if success:
                     notes_added += 1
+                    # Append to in-memory list so subsequent notes in the same batch
+                    # also dedup against just-added ones.
+                    existing_note_dicts.append({"text": note_text})
                     logger.info(f"Added memory note: {note_text[:60]}...")
 
             result["memory_notes_added"] = notes_added
+            if notes_rejected_speculative:
+                result["memory_notes_rejected"] = notes_rejected_speculative
 
         except Exception as e:
             logger.error(f"Error processing conversation turn: {e}", exc_info=True)
