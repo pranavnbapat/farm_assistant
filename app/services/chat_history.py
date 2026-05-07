@@ -72,12 +72,22 @@ async def save_chat_state(session_id: Optional[str], llm_context: Optional[list[
             return
 
 
-def format_history(messages: list[dict], max_chars: int = 4000) -> str:
-    """
-    Turn [{role, content}, ...] into a compact turn-by-turn snippet.
+def _estimate_tokens(text: str) -> int:
+    # Same heuristic as ask.py: ~4 chars per token for mixed text.
+    return max(1, len(text or "") // 4)
 
-    We walk from newest to oldest until we hit `max_chars`,
-    then reverse back to chronological order.
+
+def format_history(messages: list[dict], max_tokens: int = 1000) -> str:
+    """
+    Turn [{role, content}, ...] into a compact turn-by-turn snippet, budgeted
+    by *estimated tokens* rather than raw chars. Char-budgets understate cost
+    on multi-byte content (CJK, accented Latin) and overstate it on dense ASCII;
+    the rough 4-chars/token rule is closer for both.
+
+    We walk newest -> oldest until we hit `max_tokens`, then reverse back to
+    chronological order. This output is consumed only by small helper LLM
+    calls (turn-context resolve, turn-strategy router); the main streaming
+    prompt now uses structured chat messages directly.
     """
     buf: list[str] = []
     total = 0
@@ -88,10 +98,11 @@ def format_history(messages: list[dict], max_chars: int = 4000) -> str:
         if not content:
             continue
         line = f"{role.capitalize()}: {content}"
-        if total + len(line) > max_chars:
+        line_tokens = _estimate_tokens(line)
+        if total + line_tokens > max_tokens:
             break
         buf.append(line)
-        total += len(line)
+        total += line_tokens
 
     buf.reverse()
     return "\n".join(buf)

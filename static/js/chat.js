@@ -278,6 +278,7 @@ function getSvgIcon(name) {
         dislike: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3zm0 9-4 9c-.4 1-2 1-2 0v-4H5.4c-1.3 0-2.2-1.2-1.8-2.4l1.9-7A2 2 0 0 1 7.4 6H17z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
         share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 14 21 3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
         retry: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+        edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m13 6 4 4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
         more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>',
         speaker: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M18 9a4 4 0 0 1 0 6M20.5 6.5a7.5 7.5 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
     };
@@ -1262,13 +1263,17 @@ function attachResponseActions(bubble) {
         if (!userText || es) return;
         regenerateBtn.disabled = true;
         try {
+            // Drop this assistant turn and anything after it before re-running,
+            // so the user sees a clean replacement, not an appended duplicate.
+            removeMessagesFrom(container, { inclusive: true });
+
             await ensureSessionExists(userText);
             lastUserQuestion = userText;
             nextTurnMeta = {
                 action: 'retry',
                 retry_of_message_id: bubble.dataset.messageId || null,
             };
-            startStream(userText);
+            startStream(userText, { skipUserEcho: true, replaceHistory: true });
         } finally {
             regenerateBtn.disabled = false;
         }
@@ -1340,7 +1345,121 @@ function addMessage(role, text) {
     chat.appendChild(box);
     scrollToBottom();
 
+    if (role === 'you') {
+        bubble.dataset.userText = text || '';
+        attachUserMessageActions(bubble);
+    }
     return bubble;
+}
+
+function removeMessagesFrom(node, { inclusive }) {
+    if (!node) return;
+    let cursor = inclusive ? node : node.nextElementSibling;
+    while (cursor) {
+        const next = cursor.nextElementSibling;
+        cursor.remove();
+        cursor = next;
+    }
+}
+
+function attachUserMessageActions(bubble) {
+    if (!bubble || !bubble.parentElement) return;
+    const container = bubble.parentElement;
+    if (container.querySelector('.user-actions')) return;
+    if (bubble.dataset.userText == null) {
+        bubble.dataset.userText = bubble.textContent || '';
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'user-actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'response-action-btn';
+    editBtn.title = 'Edit and resend';
+    editBtn.innerHTML = `${getSvgIcon('edit')}<span class="sr-only">Edit and resend</span>`;
+    editBtn.addEventListener('click', () => beginEditUserMessage(container, bubble));
+
+    actions.appendChild(editBtn);
+    container.appendChild(actions);
+}
+
+function beginEditUserMessage(container, bubble) {
+    if (es) return; // a stream is in progress; ignore until it ends
+    if (container.querySelector('.user-edit-editor')) return;
+
+    const original = bubble.dataset.userText || bubble.textContent || '';
+
+    const editor = document.createElement('div');
+    editor.className = 'user-edit-editor';
+
+    const ta = document.createElement('textarea');
+    ta.className = 'user-edit-textarea';
+    ta.value = original;
+    const lines = original.split('\n').length;
+    ta.rows = Math.min(8, Math.max(2, lines + 1));
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'user-edit-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+        editor.remove();
+        bubble.style.display = '';
+    });
+
+    const sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.className = 'btn-save';
+    sendBtn.textContent = 'Send';
+    const submitEdit = async () => {
+        const newText = (ta.value || '').trim();
+        if (!newText || es) return;
+        sendBtn.disabled = true;
+        try {
+            bubble.textContent = newText;
+            bubble.dataset.userText = newText;
+            editor.remove();
+            bubble.style.display = '';
+
+            // Drop everything after this user message — assistant turn(s) are now stale.
+            removeMessagesFrom(container, { inclusive: false });
+
+            await ensureSessionExists(newText);
+            lastUserQuestion = newText;
+            nextTurnMeta = {
+                action: 'edit',
+                edited_from_message_id: bubble.dataset.messageId || null,
+            };
+            startStream(newText, { skipUserEcho: true, replaceHistory: true });
+        } finally {
+            sendBtn.disabled = false;
+        }
+    };
+    sendBtn.addEventListener('click', submitEdit);
+    ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            submitEdit();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            editor.remove();
+            bubble.style.display = '';
+        }
+    });
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(sendBtn);
+    editor.appendChild(ta);
+    editor.appendChild(btnRow);
+
+    bubble.style.display = 'none';
+    container.insertBefore(editor, bubble.nextSibling);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
 }
 
 function setStatus(text, thinking = false) {
@@ -1457,77 +1576,198 @@ function escapeHTML(s) {
     }[m]));
 }
 
-function formatInlineAssistantText(text) {
-    const codeTokens = [];
-    let withCodePlaceholders = String(text || '').replace(/`([^`]+)`/g, (_, code) => {
-        const token = `@@CODE${codeTokens.length}@@`;
-        codeTokens.push(`<code>${escapeHTML(code)}</code>`);
-        return token;
+// Configure marked once. GFM gives us tables + autolinks; breaks=true so single
+// newlines within a paragraph render as <br>, matching ChatGPT-style output.
+(function configureMarked() {
+    if (typeof window === 'undefined' || !window.marked || window.__faMarkedConfigured) return;
+    window.marked.setOptions({
+        gfm: true,
+        breaks: true,
     });
+    window.__faMarkedConfigured = true;
+})();
 
-    let html = escapeHTML(withCodePlaceholders);
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/(^|[^\w*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-    html = html.replace(/\[(\d+)\]/g, '<sup class="cite">$1</sup>');
+// Wrap [N] citations in <sup>, but skip anything inside <code>, <pre>, or <a>
+// so digit-containing code/links aren't mangled.
+function applyCitationSuperscripts(html) {
+    if (!html) return html;
+    return html.replace(
+        /(<(code|pre|a)\b[^>]*>[\s\S]*?<\/\2>)|\[(\d+)\]/g,
+        (match, block, _tag, num) => block || `<sup class="cite">${num}</sup>`
+    );
+}
 
-    codeTokens.forEach((tokenHtml, idx) => {
-        html = html.replace(`@@CODE${idx}@@`, tokenHtml);
+const FA_PURIFY_CONFIG = {
+    ADD_ATTR: ['target', 'rel'],
+    // Allow KaTeX-style spans and the citation sup we emit.
+    ALLOWED_TAGS: [
+        'a','b','blockquote','br','code','del','div','em','h1','h2','h3','h4','h5','h6',
+        'hr','i','img','li','ol','p','pre','span','strong','sub','sup','table','tbody','td',
+        'tfoot','th','thead','tr','ul'
+    ],
+    ALLOWED_ATTR: [
+        'href','title','alt','src','class','target','rel','colspan','rowspan','align','start'
+    ],
+};
+
+function attachCodeBlockEnhancements(container) {
+    if (!container) return;
+    container.querySelectorAll('pre > code').forEach((codeEl) => {
+        if (codeEl.dataset.faEnhanced === '1') return;
+        codeEl.dataset.faEnhanced = '1';
+        // Highlight if the language hint is present, or just auto-detect on plain blocks.
+        try {
+            if (window.hljs) {
+                window.hljs.highlightElement(codeEl);
+            }
+        } catch (_) {}
+        // Wrap with a copy button.
+        const pre = codeEl.parentElement;
+        if (!pre || pre.querySelector('.code-copy-btn')) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'code-copy-btn';
+        btn.textContent = 'Copy';
+        btn.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(codeEl.textContent || '');
+                btn.textContent = 'Copied';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+            } catch (_) {
+                btn.textContent = 'Failed';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+            }
+        });
+        pre.appendChild(btn);
     });
-
-    return html;
 }
 
 function renderAssistantRichText(node) {
-    const raw = node.textContent || '';
+    if (!node) return;
+    // Source of truth: dataset.rawText is set by the streaming code path; for backfill
+    // (history rendering) fall through to the existing textContent.
+    const raw = node.dataset.rawText != null ? node.dataset.rawText : (node.textContent || '');
     node.dataset.rawText = raw;
 
-    const lines = raw.replace(/\r\n/g, '\n').split('\n');
-    const blocks = [];
-    let paragraphLines = [];
-    let listItems = [];
-
-    function flushParagraph() {
-        if (!paragraphLines.length) return;
-        const content = paragraphLines
-            .map(line => formatInlineAssistantText(line))
-            .join('<br>');
-        blocks.push(`<p>${content}</p>`);
-        paragraphLines = [];
+    let html;
+    try {
+        html = window.marked ? window.marked.parse(raw) : escapeHTML(raw);
+    } catch (e) {
+        console.warn('marked parse failed, falling back to plain text', e);
+        html = escapeHTML(raw);
     }
 
-    function flushList() {
-        if (!listItems.length) return;
-        const itemsHtml = listItems
-            .map(item => `<li>${formatInlineAssistantText(item)}</li>`)
-            .join('');
-        blocks.push(`<ul>${itemsHtml}</ul>`);
-        listItems = [];
+    html = applyCitationSuperscripts(html);
+
+    if (window.DOMPurify) {
+        html = window.DOMPurify.sanitize(html, FA_PURIFY_CONFIG);
     }
+    node.innerHTML = html;
+    attachCodeBlockEnhancements(node);
+}
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        const bulletMatch = trimmed.match(/^[-*]\s+(.+)$/);
+// Throttled re-render during streaming. We accumulate raw markdown into
+// dataset.rawText and only repaint at most once per ~80ms.
+function scheduleAssistantRichRender(node) {
+    if (!node) return;
+    if (node.__faRenderScheduled) return;
+    node.__faRenderScheduled = true;
+    setTimeout(() => {
+        node.__faRenderScheduled = false;
+        try {
+            renderAssistantRichText(node);
+        } catch (e) {
+            // Streaming partial markdown can occasionally trip the parser; ignore mid-stream
+            // and let the final 'done' render reconcile.
+        }
+    }, 80);
+}
 
-        if (!trimmed) {
-            flushParagraph();
-            flushList();
-            continue;
+// -----------------------------
+// SSE over fetch + ReadableStream
+// -----------------------------
+// EventSource doesn't allow custom headers, which forced us to put the JWT in the
+// query string. fetch() + a manual SSE parser does. AbortController also gives us
+// a real abort that propagates to the server (closes TCP, FastAPI sees disconnect,
+// httpx stream to vLLM is cancelled), instead of EventSource.close()'s "best effort".
+function createSSEConnection(url, init = {}) {
+    const target = new EventTarget();
+    const controller = new AbortController();
+    let closed = false;
+
+    target.close = () => {
+        if (closed) return;
+        closed = true;
+        try { controller.abort(); } catch (_) {}
+    };
+
+    (async () => {
+        let res;
+        try {
+            res = await fetch(url, { ...init, signal: controller.signal });
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+            const evt = new Event('error');
+            evt.detail = err;
+            target.dispatchEvent(evt);
+            return;
+        }
+        if (!res.ok || !res.body) {
+            const evt = new Event('error');
+            evt.status = res.status;
+            try { evt.body = await res.text(); } catch (_) {}
+            target.dispatchEvent(evt);
+            return;
         }
 
-        if (bulletMatch) {
-            flushParagraph();
-            listItems.push(bulletMatch[1]);
-            continue;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                // Drain complete events (separator: blank line, CRLF or LF).
+                let m;
+                while ((m = buffer.match(/\r?\n\r?\n/))) {
+                    const block = buffer.slice(0, m.index);
+                    buffer = buffer.slice(m.index + m[0].length);
+                    dispatchSSEBlock(block, target);
+                }
+            }
+            buffer += decoder.decode();
+            if (buffer.trim()) dispatchSSEBlock(buffer, target);
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+            const evt = new Event('error');
+            evt.detail = err;
+            target.dispatchEvent(evt);
         }
+    })();
 
-        flushList();
-        paragraphLines.push(line);
+    return target;
+}
+
+function dispatchSSEBlock(block, target) {
+    let event = 'message';
+    const dataLines = [];
+    for (const rawLine of block.split(/\r?\n/)) {
+        if (!rawLine || rawLine.startsWith(':')) continue;
+        const colonIdx = rawLine.indexOf(':');
+        if (colonIdx < 0) continue;
+        const field = rawLine.slice(0, colonIdx);
+        let value = rawLine.slice(colonIdx + 1);
+        if (value.startsWith(' ')) value = value.slice(1);
+        if (field === 'event') event = value;
+        else if (field === 'data') dataLines.push(value);
+        // id/retry fields ignored — not needed for our flow.
     }
-
-    flushParagraph();
-    flushList();
-
-    node.innerHTML = blocks.join('') || formatInlineAssistantText(raw);
+    if (dataLines.length) {
+        target.dispatchEvent(new MessageEvent(event, { data: dataLines.join('\n') }));
+    }
 }
 
 function getAttachedFileNames() {
@@ -1577,7 +1817,9 @@ function collectClientHistoryForRequest() {
     return bounded.reverse();
 }
 
-function startStream(q) {
+function startStream(q, opts = {}) {
+    const { skipUserEcho = false, replaceHistory = false } = opts;
+
     if (es) {
         es.close();
         es = null;
@@ -1601,7 +1843,9 @@ function startStream(q) {
     const userDisplay = attachedNames.length
         ? `${q}\n\nAttached PDF${attachedNames.length > 1 ? 's' : ''}: ${attachedNames.join(', ')}`
         : q;
-    addMessage('you', userDisplay);
+    if (!skipUserEcho) {
+        addMessage('you', userDisplay);
+    }
     answerNode = addMessage('assistant', '');
 
     if (window.onAssistantStreamStart) {
@@ -1610,40 +1854,39 @@ function startStream(q) {
 
     const chatBackendBase = window.CHAT_BACKEND_URL || '';
 
-    const params = new URLSearchParams({
+    const body = {
         q,
-        page: '1',
-        max_tokens: '-1',
+        page: 1,
+        max_tokens: -1,
         model: selModel.value,
-    });
-
-    if (currentSessionUuid) {
-        params.append('session_id', currentSessionUuid);
-    }
-    if (sendDocIds.length) {
-        params.append('doc_ids', sendDocIds.join(','));
-    }
+    };
+    if (sendDocIds.length) body.doc_ids = sendDocIds;
     if (isShortAffirmation(q) && lastAssistantFollowupQuestion) {
-        params.append('followup_hint', lastAssistantFollowupQuestion);
+        body.followup_hint = lastAssistantFollowupQuestion;
     }
     const clientHistory = collectClientHistoryForRequest();
-    if (clientHistory.length) {
-        params.append('client_history', JSON.stringify(clientHistory));
-    }
-
-    // Add auth token as query param since SSE doesn't support custom headers
-    debugLog('SSE auth token present?', !!authToken);
-    if (authToken) {
-        params.append('auth_token', 'Bearer ' + authToken);
-    }
+    if (clientHistory.length) body.client_history = clientHistory;
+    if (replaceHistory) body.replace_history = true;
 
     // Attachments are now bound to this sent user turn; clear pending list in composer.
     activeDocIds = [];
     clearUploadedFileChips();
-    
-    const url = `${chatBackendBase}/ask/stream?` + params.toString();
-    debugLog('SSE URL:', url.replace(/auth_token=Bearer%20[^&]+/, 'auth_token=***'));
-    es = new EventSource(url);
+
+    const streamUrl = currentSessionUuid
+        ? `${chatBackendBase}/chatbot/api/chats/${encodeURIComponent(currentSessionUuid)}/message`
+        : `${chatBackendBase}/chatbot/api/chats/message`;
+
+    debugLog('SSE POST', streamUrl, 'auth=', !!authToken);
+    es = createSSEConnection(streamUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {}),
+            'Accept': 'text/event-stream',
+        },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+    });
 
     es.addEventListener('status', (e) => {
         try {
@@ -1656,7 +1899,9 @@ function startStream(q) {
     });
 
     es.addEventListener('token', (e) => {
-        answerNode.textContent += e.data;
+        const prev = answerNode.dataset.rawText || '';
+        answerNode.dataset.rawText = prev + e.data;
+        scheduleAssistantRichRender(answerNode);
         scrollToBottom();
         if (window.onAssistantToken) {
             window.onAssistantToken(e.data);

@@ -3,269 +3,236 @@
 from typing import Optional
 
 
-def build_prompt(
+_IDENTITY = "You are an agricultural assistant for EU-FarmBook."
+
+_LANGUAGE_RULE = (
+    "Respond in the same language as the user's latest message, "
+    "unless the user explicitly asks for another language."
+)
+
+_FOLLOWUP_RULE = (
+    "If a follow-up question would help the user, end with one. "
+    "Skip the follow-up for greetings, thanks, confirmations, or closings."
+)
+
+_HISTORY_USE_RULE = (
+    "Use the prior conversation for continuity when the user refers to earlier turns."
+)
+
+
+def _normalize_history_messages(history_messages: Optional[list[dict]]) -> list[dict]:
+    """
+    Map raw stored messages ({role, content, ...}) into OpenAI-style
+    {role: 'user' | 'assistant', content: str}, dropping empties and unknown roles.
+    """
+    if not history_messages:
+        return []
+    out: list[dict] = []
+    for m in history_messages:
+        if not isinstance(m, dict):
+            continue
+        role_in = (m.get("role") or "").strip().lower()
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        if role_in in ("user", "you", "human"):
+            role = "user"
+        elif role_in in ("assistant", "model", "ai", "bot"):
+            role = "assistant"
+        else:
+            continue
+        out.append({"role": role, "content": content})
+    return out
+
+
+def _assemble_messages(
+    system_text: str,
+    history_messages: Optional[list[dict]],
+    user_content: str,
+    user_profile_context: Optional[str] = None,
+) -> list[dict]:
+    if user_profile_context:
+        # Frame the profile as latent background — not as facts to drop into every
+        # reply. Without this guard, instruction-tuned models grab the region/farm
+        # type and shoehorn it into greetings, acknowledgements, and unrelated
+        # chit-chat ("...your farming activities in Norway").
+        system_text = (
+            f"{system_text}\n\n"
+            "## Background you have learned about this user (from prior conversations)\n"
+            f"{user_profile_context}\n\n"
+            "Use this background **only** when it is directly relevant to the user's "
+            "current question. Do not bring up the user's region, farm type, crops, "
+            "or other profile details in greetings, acknowledgements, thanks, "
+            "small talk, or otherwise unrelated turns. Treat it as something you "
+            "happen to know, not as a topic to introduce."
+        )
+    messages: list[dict] = [{"role": "system", "content": system_text}]
+    messages.extend(_normalize_history_messages(history_messages))
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+
+def _attach_sources(question: str, contexts: list[str]) -> str:
+    """
+    For retrieval turns, prepend a numbered sources block to the user's question.
+    Citations stay anchored to the [N] used in this block.
+    """
+    if not contexts:
+        return question
+    labelled = [f"[{i + 1}] {ctx}" for i, ctx in enumerate(contexts)]
+    sources_block = "\n\n".join(labelled)
+    return (
+        "Relevant EU-FarmBook sources for this question:\n\n"
+        f"{sources_block}\n\n"
+        f"Question: {question}"
+    )
+
+
+def build_messages(
     contexts: list[str],
     question: str,
-    history: Optional[str] = None,
+    history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
     has_relevant_sources: bool = True,
-) -> str:
-    """
-    Build a natural conversation prompt.
-    The LLM receives full context and handles the conversation naturally.
-    """
-    # Label each context block
-    labelled = [f"[{i + 1}] {ctx}" for i, ctx in enumerate(contexts)] if contexts else []
-    joined = "\n\n".join(labelled)
-
-    # Build the conversation
-    parts = []
-    
-    # System instruction
-    parts.append(
-        "You are an agricultural assistant for EU-FarmBook. "
-        "Only answer questions related to agriculture, farming, agri-tech, food systems, "
-        "or EU-FarmBook project topics. "
-        "If the question is outside this scope, do NOT provide the factual answer; "
-        "instead politely refuse in 1-2 short sentences and ask the user to ask an agriculture-related question."
-    )
-
-    parts.append(
-        "Language rule: respond in the same language as the user's latest message, "
-        "unless the user explicitly asks for a different language."
-    )
-
-    parts.append(
-        "Answer the user's actual question directly before adding extra detail. "
-        "Use the Previous Conversation section for continuity when the user refers to earlier turns."
-    )
-
-    parts.append(
-        "When relevant sources are provided, ground your answer in them and add inline citations "
-        "using numeric brackets like [1], [2] tied to the source list. "
-        "Include citations for factual claims that rely on those sources."
-    )
-
-    parts.append(
-        "Output formatting rule: use only valid Markdown. "
-        "Do not use raw HTML such as <br>, <br/>, or inline HTML for layout. "
-        "If you present tabular information, output a valid GitHub-style Markdown table. "
-        "If a clean table is not possible, use a bullet list instead of pseudo-table rows or stray pipe characters."
-    )
-
-    parts.append(
-        "Citation rule: only cite source numbers that exist in the provided Relevant Sources list. "
-        "Do not invent citation numbers, and do not add citations when no relevant sources are present."
-    )
-
+) -> list[dict]:
+    """Standard retrieval-grounded turn."""
+    directives = [
+        _IDENTITY,
+        (
+            "Only answer questions related to agriculture, farming, agri-tech, food systems, "
+            "or EU-FarmBook project topics. For anything outside that scope, politely refuse "
+            "in 1-2 sentences and ask the user to ask an agriculture-related question instead."
+        ),
+        _LANGUAGE_RULE,
+        f"Answer the user's actual question directly before adding extra detail. {_HISTORY_USE_RULE}",
+        (
+            "Cite sources inline as [1], [2] etc., matching the numbers in the sources block on the user's turn. "
+            "Cite only numbers that exist in that block. Do not invent citation numbers."
+        ),
+        (
+            "If a claim is not supported by the available sources, say that plainly. "
+            "If the request is ambiguous or depends on missing facts, ask one specific clarifying question."
+        ),
+    ]
     if has_relevant_sources:
-        parts.append(
-            "If Relevant Sources are present, treat them as the primary grounding material for the answer."
+        directives.append(
+            "When sources are present in the user's turn, treat them as the primary grounding material for your answer."
         )
     else:
-        parts.append(
-            "No relevant EU-FarmBook source material was found for this turn. "
-            "Say that explicitly in one short sentence, then provide a cautious best-effort answer from your general agricultural knowledge. "
-            "Do not imply that EU-FarmBook or the provided sources support that fallback answer, and do not add citations when no relevant sources are present."
+        directives.append(
+            "No EU-FarmBook source material was found for this turn. Say so in one short sentence, "
+            "then give a cautious best-effort answer from general agricultural knowledge. "
+            "Do not add citations and do not imply the sources support the fallback answer."
         )
-
-    parts.append(
-        "If uploaded PDF context is present in Relevant Sources, do not say you cannot access files. "
-        "Treat that PDF content as available context and answer from it."
+    directives.append(
+        "If uploaded PDF content appears in the sources block, treat it as available context "
+        "and answer from it; do not say you cannot access files."
     )
+    directives.append(_FOLLOWUP_RULE)
 
-    parts.append(
-        "If the request is ambiguous, under-specified, or depends on missing facts, "
-        "ask one specific clarifying question instead of making up assumptions. "
-        "If the available sources do not support a claim, say that plainly."
-    )
-
-    parts.append(
-        "If helpful, end with one short follow-up question. "
-        "Do not force a follow-up question for simple greetings, thanks, confirmations, or closings."
-    )
-    
-    # Available information
-    if user_profile_context:
-        parts.append(f"\nUser Profile:\n{user_profile_context}")
-    
-    if joined:
-        parts.append(f"\nRelevant Sources:\n{joined}")
-    
-    # Conversation history
-    if history:
-        parts.append(f"\nPrevious Conversation:\n{history}")
-    
-    # Current question
-    parts.append(f"\nUser: {question}")
-    parts.append("\nAssistant:")
-    
-    return "\n".join(parts)
+    system_text = "\n\n".join(directives)
+    user_content = _attach_sources(question, contexts)
+    return _assemble_messages(system_text, history_messages, user_content, user_profile_context)
 
 
-def build_history_only_prompt(
+def build_history_only_messages(
     question: str,
-    history: Optional[str] = None,
+    history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
-) -> str:
-    """
-    Build a prompt that answers strictly from conversation history.
-    Used for recap/meta turns so the assistant does not invent topic summaries
-    from external retrieval when the user is asking about the conversation itself.
-    """
-    parts = []
-
-    parts.append(
-        "You are an agricultural assistant for EU-FarmBook. "
-        "The user is asking about the conversation itself. "
-        "Answer strictly from the Previous Conversation section below."
-    )
-
-    parts.append(
-        "Do not use outside knowledge, retrieved sources, or general agricultural background "
-        "to fill gaps. If the previous conversation does not contain the requested information, "
-        "say that plainly."
-    )
-
-    parts.append(
-        "Language rule: respond in the same language as the user's latest message, "
-        "unless the user explicitly asks for a different language."
-    )
-
-    parts.append(
-        "Be concrete, brief, and faithful to what was actually said. "
-        "If helpful, end with one short follow-up question. "
-        "Do not force a follow-up question when a direct recap is enough."
-    )
-
-    if user_profile_context:
-        parts.append(f"\nUser Profile:\n{user_profile_context}")
-
-    if history:
-        parts.append(f"\nPrevious Conversation:\n{history}")
-    else:
-        parts.append(
-            "\nPrevious Conversation:\n"
-            "No earlier conversation is available in the current session context."
+) -> list[dict]:
+    """The user is asking about the conversation itself. Stay strictly within history."""
+    directives = [
+        _IDENTITY,
+        (
+            "The user is asking about the conversation itself. "
+            "Answer strictly from the prior conversation in this thread. "
+            "Do not use outside knowledge or retrieved sources to fill gaps. "
+            "If the conversation does not contain the requested information, say that plainly."
+        ),
+        _LANGUAGE_RULE,
+        (
+            "Be concrete, brief, and faithful to what was actually said. "
+            "Skip a follow-up question when a direct recap is enough."
+        ),
+    ]
+    system_text = "\n\n".join(directives)
+    user_content = question
+    msgs = _assemble_messages(system_text, history_messages, user_content, user_profile_context)
+    if not _normalize_history_messages(history_messages):
+        # Inject a small note so the model doesn't fabricate a recap.
+        msgs[0]["content"] += (
+            "\n\nNote: there is no earlier conversation in the current session. "
+            "Acknowledge this honestly if the user asks for a recap."
         )
-
-    parts.append(f"\nUser: {question}")
-    parts.append("\nAssistant:")
-
-    return "\n".join(parts)
+    return msgs
 
 
-def build_conversation_only_prompt(
+def build_conversation_only_messages(
     question: str,
-    history: Optional[str] = None,
+    history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
-) -> str:
+) -> list[dict]:
     """
-    Build a prompt for conversational turns that should not trigger retrieval.
-    This covers greetings, thanks, acknowledgements, small-talk-like control turns,
-    and lightweight clarification turns that depend mainly on the current chat.
+    Lightweight conversational turn (greeting, thanks, confirmation, brief clarification).
+    No retrieval-style grounding required. Profile background is intentionally
+    *not* injected on this turn — it tempts the model into shoehorning farming
+    or location details into casual replies.
     """
-    parts = []
-
-    parts.append(
-        "You are an agricultural assistant for EU-FarmBook. "
-        "Handle this as a conversational turn, not a retrieval-heavy research answer."
-    )
-
-    parts.append(
-        "Use the user's latest message and the Previous Conversation section for context. "
-        "Do not invent external facts or pretend to have evidence that is not present."
-    )
-
-    parts.append(
-        "If the user is greeting, thanking, confirming, or asking a lightweight conversational question, "
-        "reply naturally and concisely."
-    )
-
-    parts.append(
-        "If the user is asking for the next step but the subject is unclear, "
-        "ask one specific clarifying question instead of guessing."
-    )
-
-    parts.append(
-        "Language rule: respond in the same language as the user's latest message, "
-        "unless the user explicitly asks for a different language."
-    )
-
-    parts.append(
-        "If helpful, end with one short follow-up question. "
-        "Do not force a follow-up question for simple greetings, thanks, confirmations, or closings."
-    )
-
-    if user_profile_context:
-        parts.append(f"\nUser Profile:\n{user_profile_context}")
-
-    if history:
-        parts.append(f"\nPrevious Conversation:\n{history}")
-
-    parts.append(f"\nUser: {question}")
-    parts.append("\nAssistant:")
-
-    return "\n".join(parts)
+    directives = [
+        _IDENTITY,
+        (
+            "This is a conversational turn — a greeting, thanks, confirmation, "
+            "small talk, or a casual statement, not a research question. "
+            "Reply briefly and naturally, matching the user's register: warm and "
+            "playful when the message is casual, concise and direct when it is. "
+            "Do not preach about your purpose. Do not bring up farming, the user's "
+            "region, the user's crops, or EU-FarmBook unless the user actually "
+            "raises one of those topics."
+        ),
+        (
+            "If the user is asking about a next step but the subject is unclear, "
+            "ask one short clarifying question instead of guessing."
+        ),
+        _LANGUAGE_RULE,
+        _FOLLOWUP_RULE,
+    ]
+    system_text = "\n\n".join(directives)
+    # Deliberately ignore user_profile_context on conversational turns.
+    return _assemble_messages(system_text, history_messages, question, user_profile_context=None)
 
 
-def build_capabilities_prompt(
+def build_capabilities_messages(
     question: str,
-    history: Optional[str] = None,
+    history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
-) -> str:
-    """
-    Build a prompt for questions about what the assistant can do.
-    This should answer from the product's intended behavior rather than from retrieved sources.
-    """
-    parts = []
-
-    parts.append(
-        "You are an agricultural assistant for EU-FarmBook. "
-        "The user is asking about your capabilities, how you can help, or what kinds of tasks you handle."
-    )
-
-    parts.append(
-        "Answer from your intended product behavior, not from retrieved sources. "
-        "Do not cite documents or present capability claims as if they were sourced facts."
-    )
-
-    parts.append(
-        "Describe capabilities concretely and realistically. "
-        "You can help with agriculture and EU-FarmBook-related questions, explain concepts, "
-        "summarize or discuss uploaded PDF content when available, recap the conversation, "
-        "compare options, and guide the user step by step on a farming or project-related topic."
-    )
-
-    parts.append(
-        "Do not claim external actions you cannot perform. "
-        "If a capability depends on the user providing more information or a document, say that clearly."
-    )
-
-    parts.append(
-        "Language rule: respond in the same language as the user's latest message, "
-        "unless the user explicitly asks for a different language."
-    )
-
-    parts.append(
-        "Keep the answer concise, practical, and organized. "
-        "If helpful, end with a short question offering 2-4 concrete next-step options."
-    )
-
-    if user_profile_context:
-        parts.append(f"\nUser Profile:\n{user_profile_context}")
-
-    if history:
-        parts.append(f"\nPrevious Conversation:\n{history}")
-
-    parts.append(f"\nUser: {question}")
-    parts.append("\nAssistant:")
-
-    return "\n".join(parts)
+) -> list[dict]:
+    """The user is asking what the assistant can do. Answer from product behavior, not retrieval."""
+    directives = [
+        _IDENTITY,
+        (
+            "The user is asking about your capabilities. Answer from your intended product behavior, "
+            "not from retrieved sources, and do not present capability claims as sourced facts."
+        ),
+        (
+            "You can help with agriculture and EU-FarmBook-related questions, explain concepts, "
+            "summarize or discuss uploaded PDF content when available, recap the conversation, "
+            "compare options, and guide the user step by step on a farming or project-related topic. "
+            "Do not claim external actions you cannot perform; if a capability depends on the user "
+            "providing more information or a document, say that clearly."
+        ),
+        _LANGUAGE_RULE,
+        (
+            "Keep the answer concise, practical, and organized. "
+            "If helpful, end with a short question offering 2-4 concrete next-step options."
+        ),
+    ]
+    system_text = "\n\n".join(directives)
+    # Capability answers describe the product, not the user — drop the profile.
+    return _assemble_messages(system_text, history_messages, question, user_profile_context=None)
 
 
 def build_summary_prompt(user_prompt: str, text: str) -> str:
-    """Keep user's custom prompt authoritative."""
+    """One-shot summarization. Keep user's custom prompt authoritative."""
     from app.config import get_settings
     S = get_settings()
 
@@ -281,7 +248,7 @@ def build_summary_prompt(user_prompt: str, text: str) -> str:
 
 
 def build_title_prompt(question: str, answer: str | None = None) -> str:
-    """Build a small prompt for chat title generation."""
+    """Small one-shot prompt for chat title generation."""
     base = (
         "Generate a short, specific chat title using 2-3 words only. "
         "No punctuation, no quotes, no emojis, no trailing period. Output ONLY the title text.\n\n"

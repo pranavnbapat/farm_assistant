@@ -4,7 +4,7 @@ import httpx
 import json
 import logging
 
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Optional, List
 
 from app.config import get_settings
 
@@ -26,11 +26,14 @@ def _build_headers() -> Dict[str, str]:
     return headers
 
 
-def _build_messages(prompt: str) -> list[Dict[str, str]]:
-    """Build OpenAI-compatible messages format."""
+def _wrap_prompt_as_messages(prompt: str) -> List[Dict[str, str]]:
+    """
+    Fallback for one-shot helpers that pass a single prompt string
+    (turn-strategy router, query normalizer, title generator, summarise).
+    """
     return [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": prompt}
+        {"role": "user", "content": prompt},
     ]
 
 
@@ -38,12 +41,13 @@ def build_gen_payload(
     prompt: str,
     temperature: float,
     max_tokens: int,
-    model: str | None = None
+    model: str | None = None,
+    messages: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Build payload for non-streaming generation."""
     payload: Dict[str, Any] = {
         "model": model or S.VLLM_MODEL,
-        "messages": _build_messages(prompt),
+        "messages": messages if messages is not None else _wrap_prompt_as_messages(prompt),
         "temperature": temperature,
         "top_p": 0.9,
     }
@@ -57,10 +61,11 @@ def build_stream_payload(
     prompt: str,
     temperature: float,
     max_tokens: int,
-    model: str | None = None
+    model: str | None = None,
+    messages: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Build payload for streaming generation."""
-    payload = build_gen_payload(prompt, temperature, max_tokens, model)
+    payload = build_gen_payload(prompt, temperature, max_tokens, model, messages=messages)
     payload["stream"] = True
     return payload
 
@@ -70,15 +75,17 @@ async def generate_once(
     temperature: float,
     max_tokens: int,
     model: str | None = None,
-    num_ctx: int | None = None  # Compatibility with Ollama interface, not used in vLLM
+    num_ctx: int | None = None,  # Compatibility with Ollama interface, not used in vLLM
+    messages: Optional[List[Dict[str, str]]] = None,
 ) -> str:
     """
     Non-streaming one-shot generation.
-    Keeps the older client signature for router compatibility.
+    If `messages` is provided, it is used as the OpenAI chat-completions array
+    verbatim and `prompt` is ignored.
     """
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=1800.0, pool=None)
     url = f"{S.VLLM_URL}/v1/chat/completions"
-    
+
     async with httpx.AsyncClient(
         timeout=timeout,
         verify=S.VERIFY_SSL,
@@ -88,11 +95,11 @@ async def generate_once(
     ) as client:
         r = await client.post(
             url,
-            json=build_gen_payload(prompt, temperature, max_tokens, model)
+            json=build_gen_payload(prompt, temperature, max_tokens, model, messages=messages)
         )
         r.raise_for_status()
         data = r.json()
-        
+
         # Extract content from OpenAI response format
         if "choices" in data and len(data["choices"]) > 0:
             message = data["choices"][0].get("message", {})
@@ -106,18 +113,20 @@ async def stream_generate(
     max_tokens: int,
     context: list[int] | None = None,  # Compatibility with Ollama, not used in vLLM
     model: str | None = None,
-    num_ctx: int | None = None  # Compatibility with Ollama, not used in vLLM
+    num_ctx: int | None = None,  # Compatibility with Ollama, not used in vLLM
+    messages: Optional[List[Dict[str, str]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Streaming generation using Server-Sent Events.
-    Keeps the older client signature for router compatibility.
+    If `messages` is provided, it is used as the OpenAI chat-completions array
+    verbatim and `prompt` is ignored.
     Yields dicts with 'response' for tokens and 'done' when complete.
     """
     timeout = httpx.Timeout(connect=30.0, read=3600.0, write=300.0, pool=None)
     url = f"{S.VLLM_URL}/v1/chat/completions"
-    
+
     logger.info(f"Starting vLLM stream to {url}, model: {model or S.VLLM_MODEL}")
-    
+
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
@@ -126,7 +135,7 @@ async def stream_generate(
             headers=_build_headers(),
             trust_env=False
         ) as client:
-            payload = build_stream_payload(prompt, temperature, max_tokens, model)
+            payload = build_stream_payload(prompt, temperature, max_tokens, model, messages=messages)
             logger.debug(f"Request payload: {json.dumps(payload)[:500]}...")
             
             async with client.stream(

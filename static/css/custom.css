@@ -431,6 +431,108 @@ h1 {
     font-size: 0.88em;
 }
 
+/* --- Markdown prose (assistant) --- */
+.assistant .bubble h1,
+.assistant .bubble h2,
+.assistant .bubble h3,
+.assistant .bubble h4,
+.assistant .bubble h5,
+.assistant .bubble h6 {
+    font-weight: 600;
+    line-height: 1.25;
+    margin: 22px 0 10px;
+}
+.assistant .bubble h1 { font-size: 1.55em; }
+.assistant .bubble h2 { font-size: 1.35em; }
+.assistant .bubble h3 { font-size: 1.18em; }
+.assistant .bubble h4 { font-size: 1.05em; }
+.assistant .bubble h1:first-child,
+.assistant .bubble h2:first-child,
+.assistant .bubble h3:first-child,
+.assistant .bubble h4:first-child { margin-top: 0; }
+
+.assistant .bubble pre {
+    position: relative;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color, rgba(0,0,0,0.08));
+    border-radius: 8px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    margin: 0 0 16px;
+    font-size: 0.9em;
+    line-height: 1.5;
+}
+.assistant .bubble pre code {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+    white-space: pre;
+}
+.assistant .bubble pre .code-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    border: 1px solid var(--border-color, rgba(0,0,0,0.12));
+    background: var(--bg-secondary, rgba(255,255,255,0.85));
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+.assistant .bubble pre:hover .code-copy-btn,
+.assistant .bubble pre .code-copy-btn:focus {
+    opacity: 1;
+}
+
+.assistant .bubble blockquote {
+    border-left: 3px solid var(--border-color, rgba(0,0,0,0.18));
+    color: var(--text-muted);
+    margin: 0 0 16px;
+    padding: 2px 0 2px 12px;
+}
+
+.assistant .bubble table {
+    border-collapse: collapse;
+    margin: 0 0 16px;
+    width: 100%;
+    display: block;
+    overflow-x: auto;
+    font-size: 0.92em;
+}
+.assistant .bubble th,
+.assistant .bubble td {
+    border: 1px solid var(--border-color, rgba(0,0,0,0.12));
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+.assistant .bubble thead th {
+    background: var(--bg-tertiary);
+    font-weight: 600;
+}
+
+.assistant .bubble hr {
+    border: 0;
+    border-top: 1px solid var(--border-color, rgba(0,0,0,0.12));
+    margin: 18px 0;
+}
+
+.assistant .bubble a {
+    color: var(--accent, #1f6feb);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.assistant .bubble a:hover { text-decoration-thickness: 2px; }
+
+.assistant .bubble ol {
+    list-style: decimal;
+}
+
 /* Status bar */
 .status {
     display: flex;
@@ -509,6 +611,69 @@ h1 {
     opacity: 0.5;
     cursor: not-allowed;
 }
+
+/* User-message hover actions (Edit and resend) */
+.user-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: 4px;
+    max-width: var(--chat-max-width);
+    margin-left: auto;
+    margin-right: 0;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+.msg.you:hover .user-actions,
+.msg.you:focus-within .user-actions {
+    opacity: 1;
+}
+
+/* Inline editor for edit-and-resend */
+.user-edit-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-left: auto;
+    max-width: var(--chat-max-width);
+    background: var(--bg-secondary, #f7f7f8);
+    border: 1px solid var(--border-color, rgba(0,0,0,0.12));
+    border-radius: 12px;
+    padding: 10px 12px;
+}
+.user-edit-textarea {
+    width: 100%;
+    min-height: 60px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    resize: vertical;
+    outline: none;
+}
+.user-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.user-edit-actions .btn-cancel,
+.user-edit-actions .btn-save {
+    padding: 6px 14px;
+    border-radius: 16px;
+    border: 1px solid var(--border-color, rgba(0,0,0,0.18));
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+}
+.user-edit-actions .btn-save {
+    background: var(--accent, #1f6feb);
+    border-color: var(--accent, #1f6feb);
+    color: white;
+}
+.user-edit-actions .btn-save:hover { filter: brightness(1.05); }
+.user-edit-actions .btn-cancel:hover { background: var(--bg-hover, rgba(0,0,0,0.05)); }
+.user-edit-actions .btn-save:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .response-action-notice {
     margin-left: 6px;

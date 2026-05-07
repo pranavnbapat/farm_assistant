@@ -88,6 +88,11 @@ class ChatMessageStreamIn(BaseModel):
     model: Optional[str] = None
     followup_hint: Optional[str] = None
     doc_ids: List[str] = Field(default_factory=list)
+    client_history: List[Dict[str, str]] = Field(default_factory=list)
+    # When true, the backend uses `client_history` as the canonical conversation
+    # for this turn and skips loading messages from the persisted session.
+    # Used for regenerate / edit-and-resend so the LLM doesn't see the discarded turn.
+    replace_history: bool = False
 
 
 class UserProfilePatchIn(BaseModel):

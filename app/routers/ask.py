@@ -35,10 +35,10 @@ from app.services.pdf_service import (
     docs_from_attachment_records,
 )
 from app.services.prompt_service import (
-    build_capabilities_prompt,
-    build_prompt,
-    build_conversation_only_prompt,
-    build_history_only_prompt,
+    build_capabilities_messages,
+    build_messages,
+    build_conversation_only_messages,
+    build_history_only_messages,
     build_summary_prompt,
     build_title_prompt,
 )
@@ -86,34 +86,12 @@ def _normalize_model(model: Optional[str]) -> str:
 
 
 def _sanitize_generated_markdown(text: str) -> str:
+    """
+    Light cleanup only. Frontend renders real Markdown (tables, headings, code blocks),
+    so we no longer rewrite tables to bullets or strip <br>; just normalize line endings
+    and collapse excessive blank lines.
+    """
     cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    cleaned = _re.sub(r"<br\s*/?>", "\n", cleaned, flags=_re.IGNORECASE)
-
-    repaired_lines: list[str] = []
-    for raw_line in cleaned.split("\n"):
-        line = raw_line.rstrip()
-        stripped = line.strip()
-
-        if not stripped:
-            repaired_lines.append("")
-            continue
-
-        pipe_count = stripped.count("|")
-        if pipe_count >= 2:
-            is_table_line = (
-                stripped.startswith("|")
-                and stripped.endswith("|")
-            ) or bool(_re.fullmatch(r"\|?[\s:-]+\|[\s|:-]*", stripped))
-
-            if not is_table_line:
-                cells = [cell.strip() for cell in stripped.strip("|").split("|") if cell.strip()]
-                if cells:
-                    repaired_lines.append(f"- {' - '.join(cells)}")
-                    continue
-
-        repaired_lines.append(line)
-
-    cleaned = "\n".join(repaired_lines)
     cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -200,7 +178,7 @@ async def _decide_turn_strategy(question: str, history_text: str) -> str:
     )
     try:
         raw = await asyncio.wait_for(
-            generate_once(prompt, temperature=0.0, max_tokens=24),
+            generate_once(prompt, temperature=0.0, max_tokens=12),
             timeout=1.5,
         )
         match = _re.search(r"\{.*?\}", raw or "", flags=_re.DOTALL)
@@ -335,6 +313,21 @@ def _should_skip_query_normalization(text: str) -> bool:
     return any(ord(ch) > 127 for ch in (text or ""))
 
 
+def _looks_standalone(user_q: str) -> bool:
+    """
+    Decide whether to skip `_resolve_turn_context`. Uses only structural,
+    language-agnostic signals (character count + whitespace-separated word
+    count) so the optimization applies equally to any language. Short or
+    sparse messages still go through resolve, where the LLM uses prior
+    conversation context to expand them.
+    """
+    q = (user_q or "").strip()
+    if len(q) < 40:
+        return False
+    words = [w for w in q.split() if w]
+    return len(words) >= 7
+
+
 async def _normalize_query_for_retrieval(text: str) -> str:
     """
     Best-effort query cleanup for spelling/grammar to improve retrieval.
@@ -379,7 +372,7 @@ async def _maybe_update_session_title(
         raw_title = await generate_once(
             title_prompt,
             temperature=0.2,
-            max_tokens=8,
+            max_tokens=16,
         )
     except httpx.HTTPError:
         return
@@ -431,6 +424,7 @@ async def ask_stream(
     followup_hint: Optional[str] = None,
     doc_ids: Optional[str] = None,
     client_history: Optional[str] = None,
+    replace_history: bool = False,
     request: Request = None,
 ):
     """
@@ -468,12 +462,8 @@ async def ask_stream(
 
         t0 = time.perf_counter()
         
-        # Extract auth info
-        auth_token = ""
-        if request:
-            auth_token = request.headers.get("Authorization", "")
-            if not auth_token:
-                auth_token = request.query_params.get("auth_token", "")
+        # Extract auth info from the standard Authorization header.
+        auth_token = request.headers.get("Authorization", "") if request else ""
         
         user_uuid = _extract_user_uuid_from_token(auth_token) if auth_token else None
         
@@ -491,10 +481,16 @@ async def ask_stream(
                 client_messages = []
 
         state = {"messages": [], "llm_context": None}
-        if session_id:
+        if session_id and not replace_history:
             state = await load_chat_state(session_id, auth_token)
 
-        merged_messages = merge_messages(state.get("messages", []), client_messages)
+        # When the caller signals replace_history=true (regenerate / edit-and-resend),
+        # the client_history is treated as authoritative and the persisted session is
+        # ignored for THIS turn's prompt construction.
+        if replace_history:
+            merged_messages = list(client_messages)
+        else:
+            merged_messages = merge_messages(state.get("messages", []), client_messages)
         state["messages"] = merged_messages
 
         history_text = format_history(state.get("messages", []))
@@ -504,35 +500,61 @@ async def ask_stream(
         if not prev_q and followup_hint:
             prev_q = (followup_hint or "").strip()[:300]
 
-        turn_context = await _resolve_turn_context(
-            question=user_q,
-            history_text=history_text,
-            last_assistant_question=prev_q,
-            followup_hint=followup_hint or "",
-        )
-        effective_q = (turn_context.get("resolved_user_message") or user_q).strip() or user_q
-        prompt_q = (turn_context.get("assistant_instruction") or effective_q).strip() or effective_q
+        # --- Pre-flight pipeline ---
+        # We have three small LLM hops (turn-context resolve, query normalization,
+        # turn-strategy router) and one HTTP-pair (user profile + facts) before the
+        # main stream can start. Reduce wall time by:
+        #   1. Skipping `_resolve_turn_context` when the message is plainly standalone.
+        #   2. Skipping `_decide_turn_strategy` when a heuristic classifier is confident.
+        #   3. Running whatever survives concurrently with profile loading.
 
-        retrieval_q = effective_q
-        if not _should_skip_query_normalization(retrieval_q):
-            retrieval_q = await _normalize_query_for_retrieval(retrieval_q)
-        if requested_doc_ids and _is_file_handoff_query(user_q):
-            retrieval_q = (
-                "Summarize the uploaded PDF(s) with key points and practical takeaways, "
-                "then ask one focused follow-up question."
-            )
-
-        # Load user profile
-        profile_context = ""
-        if user_uuid and auth_token:
+        async def _profile_task() -> str:
+            if not (user_uuid and auth_token):
+                return ""
             try:
                 profile = await UserProfileService.get_or_create_profile(user_uuid, auth_token)
-                facts = await UserProfileService.get_facts(user_uuid, auth_token, limit=5)
-                profile_context = UserProfileService.build_profile_context(profile, facts)
+                facts, memory_notes = await asyncio.gather(
+                    UserProfileService.get_facts(user_uuid, auth_token, limit=5),
+                    UserProfileService.get_memory_notes(user_uuid, auth_token, limit=10),
+                )
+                return UserProfileService.build_profile_context(profile, facts, memory_notes)
             except Exception as e:
                 logger.warning(f"Failed to load user profile: {e}")
+                return ""
 
-        turn_strategy = await _decide_turn_strategy(prompt_q, history_text)
+        profile_future = asyncio.create_task(_profile_task())
+
+        if _looks_standalone(user_q):
+            effective_q = user_q
+            prompt_q = user_q
+        else:
+            turn_context = await _resolve_turn_context(
+                question=user_q,
+                history_text=history_text,
+                last_assistant_question=prev_q,
+                followup_hint=followup_hint or "",
+            )
+            effective_q = (turn_context.get("resolved_user_message") or user_q).strip() or user_q
+            prompt_q = (turn_context.get("assistant_instruction") or effective_q).strip() or effective_q
+
+        async def _retrieval_q_task() -> str:
+            if requested_doc_ids and _is_file_handoff_query(user_q):
+                return (
+                    "Summarize the uploaded PDF(s) with key points and practical takeaways, "
+                    "then ask one focused follow-up question."
+                )
+            if _should_skip_query_normalization(effective_q):
+                return effective_q
+            return await _normalize_query_for_retrieval(effective_q)
+
+        async def _strategy_task() -> str:
+            return await _decide_turn_strategy(prompt_q, history_text)
+
+        retrieval_q, turn_strategy, profile_context = await asyncio.gather(
+            _retrieval_q_task(),
+            _strategy_task(),
+            profile_future,
+        )
 
         # Concurrency gate
         sem = getattr(request.app.state, "gen_semaphore", None)
@@ -691,33 +713,34 @@ async def ask_stream(
             _max_tokens = S.MAX_OUTPUT_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
+        history_messages_for_prompt = state.get("messages", [])
         if turn_strategy == "history_only":
-            prompt = build_history_only_prompt(
+            messages = build_history_only_messages(
                 question=prompt_q,
-                history=history_text,
+                history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
             )
         elif turn_strategy == "conversation_only":
-            prompt = build_conversation_only_prompt(
+            messages = build_conversation_only_messages(
                 question=prompt_q,
-                history=history_text,
+                history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
             )
         elif turn_strategy == "assistant_capabilities":
-            prompt = build_capabilities_prompt(
+            messages = build_capabilities_messages(
                 question=prompt_q,
-                history=history_text,
+                history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
             )
         else:
-            prompt = build_prompt(
+            messages = build_messages(
                 contexts=contexts if contexts else [],
                 question=prompt_q,
-                history=history_text,
+                history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
                 has_relevant_sources=bool(contexts),
             )
-        prompt_tokens = _estimate_tokens(prompt)
+        prompt_tokens = sum(_estimate_tokens(m.get("content", "")) for m in messages)
         prompt_cap = min(
             S.MAX_INPUT_TOKENS,
             max(256, int(S.NUM_CTX) - int(_max_tokens) - 256),
@@ -746,37 +769,30 @@ async def ask_stream(
         try:
             ctx = initial_llm_ctx
             answer_chunks: List[str] = []
-            last_done_reason = None
-            hops = 0
-            MAX_HOPS = 100
 
-            while hops < MAX_HOPS:
-                hops += 1
-                _prompt = prompt if hops == 1 else ""
-                
-                async for obj in stream_generate(
-                    _prompt, _temperature, _max_tokens,
-                    context=ctx, model=normalized_model, num_ctx=S.NUM_CTX,
-                ):
-                    if "response" in obj and obj["response"]:
-                        chunk = obj["response"]
-                        answer_chunks.append(chunk)
-                        async for x in emit("token", chunk):
-                            yield x
+            # vLLM streams the whole answer in one pass; there is no Ollama-style
+            # "context" continuation. If we ever need to handle done_reason="length"
+            # (e.g. switch to a different backend later), reintroduce a continuation
+            # loop here — but for now a single call is correct and clearer.
+            async for obj in stream_generate(
+                "", _temperature, _max_tokens,
+                context=ctx, model=normalized_model, num_ctx=S.NUM_CTX,
+                messages=messages,
+            ):
+                if "response" in obj and obj["response"]:
+                    chunk = obj["response"]
+                    answer_chunks.append(chunk)
+                    async for x in emit("token", chunk):
+                        yield x
 
-                    if "context" in obj and obj["context"]:
-                        ctx = obj["context"]
+                if "context" in obj and obj["context"]:
+                    ctx = obj["context"]
 
-                    if obj.get("done"):
-                        stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
-                        async for x in emit("stats", stats):
-                            yield x
-                        last_done_reason = obj.get("done_reason")
-                        break
+                if obj.get("done"):
+                    stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
+                    async for x in emit("stats", stats):
+                        yield x
 
-                if last_done_reason != "length":
-                    break
-                    
         except httpx.ConnectError as e:
             logger.error(f"Cannot connect to LLM backend: {e}")
             async for x in emit_app_error({"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
@@ -806,8 +822,15 @@ async def ask_stream(
                     _maybe_update_session_title(session_id, user_q, full_text, auth_token)
                 )
 
-        # Update profile (fire-and-forget)
-        if user_uuid and session_id and auth_token:
+        # Update profile (fire-and-forget) — only on substantive turns. Greetings,
+        # acknowledgements, and capability questions don't carry profile signal,
+        # and writing them anyway pollutes the profile (and burns a vLLM call).
+        if (
+            user_uuid
+            and session_id
+            and auth_token
+            and turn_strategy not in ("conversation_only", "assistant_capabilities")
+        ):
             asyncio.create_task(
                 UserProfileService.process_conversation_turn(
                     user_uuid, session_id, user_q, full_text, auth_token
@@ -874,6 +897,8 @@ async def chat_message_stream_create(
         session_id=None,
         followup_hint=body.followup_hint,
         doc_ids=",".join(body.doc_ids),
+        client_history=json.dumps(body.client_history) if body.client_history else None,
+        replace_history=body.replace_history,
         request=request,
     )
 
@@ -895,6 +920,8 @@ async def chat_message_stream_existing(
         session_id=session_id,
         followup_hint=body.followup_hint,
         doc_ids=",".join(body.doc_ids),
+        client_history=json.dumps(body.client_history) if body.client_history else None,
+        replace_history=body.replace_history,
         request=request,
     )
 
