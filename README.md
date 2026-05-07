@@ -141,12 +141,6 @@ All runtime configuration is read from environment variables via `app/config.py`
 | `CHAT_BACKEND_URL` | Explicit Django backend base URL override | empty |
 | `AUTH_BACKEND_URL` | Explicit Django auth backend base URL override | empty |
 | `ADMIN_API_TOKEN` | Optional bearer token forwarded to upstream login | empty |
-| `UPSTREAM_BASIC_AUTH_USER` | Optional HTTP Basic Auth username for backend-admin gateway | empty |
-| `UPSTREAM_BASIC_AUTH_PASSWORD` | Optional HTTP Basic Auth password for backend-admin gateway | empty |
-| `BACKEND_ADMIN_CORE_DEV_USERNAME` | Optional dev-only HTTP Basic Auth username for backend-admin gateway | empty |
-| `BACKEND_ADMIN_CORE_DEV_PASSWORD` | Optional dev-only HTTP Basic Auth password for backend-admin gateway | empty |
-| `BACKEND_ADMIN_CORE_PRD_USERNAME` | Optional prd-only HTTP Basic Auth username for backend-admin gateway | empty |
-| `BACKEND_ADMIN_CORE_PRD_PASSWORD` | Optional prd-only HTTP Basic Auth password for backend-admin gateway | empty |
 
 ### OpenSearch
 

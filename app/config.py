@@ -17,12 +17,6 @@ class Settings(BaseSettings):
     ENABLE_REDOC: bool = False
 
     CHAT_BACKEND_URL: str = ""
-    UPSTREAM_BASIC_AUTH_USER: str = ""
-    UPSTREAM_BASIC_AUTH_PASSWORD: str = ""
-    BACKEND_ADMIN_CORE_DEV_USERNAME: str = ""
-    BACKEND_ADMIN_CORE_DEV_PASSWORD: str = ""
-    BACKEND_ADMIN_CORE_PRD_USERNAME: str = ""
-    BACKEND_ADMIN_CORE_PRD_PASSWORD: str = ""
 
     # --- OpenSearch proxy ---
     OPENSEARCH_API_URL: str

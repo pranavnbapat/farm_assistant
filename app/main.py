@@ -68,25 +68,6 @@ logger.info(f"FA_ENV={S.FA_ENV}, Using auth backend: {LOGIN_URL}")
 ENABLE_DOCS: bool = True
 
 
-def _upstream_basic_auth() -> Optional[httpx.BasicAuth]:
-    env_key = (S.FA_ENV or "local").strip().lower()
-    env_specific_user = ""
-    env_specific_password = ""
-
-    if env_key == "dev":
-        env_specific_user = (S.BACKEND_ADMIN_CORE_DEV_USERNAME or "").strip()
-        env_specific_password = S.BACKEND_ADMIN_CORE_DEV_PASSWORD or ""
-    elif env_key == "prd":
-        env_specific_user = (S.BACKEND_ADMIN_CORE_PRD_USERNAME or "").strip()
-        env_specific_password = S.BACKEND_ADMIN_CORE_PRD_PASSWORD or ""
-
-    user = env_specific_user or (S.UPSTREAM_BASIC_AUTH_USER or "").strip()
-    if not user:
-        return None
-    password = env_specific_password or S.UPSTREAM_BASIC_AUTH_PASSWORD or ""
-    return httpx.BasicAuth(user, password)
-
-
 def _relay_upstream_response(upstream: httpx.Response) -> JSONResponse:
     """
     Return upstream response with original status code and best-effort JSON body.
@@ -132,7 +113,6 @@ async def _proxy_json_request(
     headers: Optional[dict[str, str]] = None,
     json_body: Any = None,
     params: Optional[dict[str, Any]] = None,
-    auth: Optional[httpx.Auth] = None,
 ) -> JSONResponse:
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=S.VERIFY_SSL) as client:
@@ -142,7 +122,6 @@ async def _proxy_json_request(
                 headers=headers,
                 json=json_body,
                 params=params,
-                auth=auth,
             )
             return _relay_upstream_response(upstream)
     except httpx.HTTPError as e:
@@ -269,7 +248,6 @@ async def api_login(body: LoginBody):
                 LOGIN_URL,
                 json=payload,
                 headers=headers,
-                auth=_upstream_basic_auth(),
             )
     except httpx.ConnectError as exc:
         logger.error(f"Cannot connect to auth backend at {LOGIN_URL}: {exc}")
@@ -324,7 +302,7 @@ async def proxy_get_sessions(request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/"
-    return await _proxy_json_request("GET", url, headers=_chat_backend_headers(request), auth=_upstream_basic_auth())
+    return await _proxy_json_request("GET", url, headers=_chat_backend_headers(request))
 
 
 @app.post("/chatbot/api/chats", tags=["Chats"], summary="Create Chat")
@@ -332,7 +310,7 @@ async def api_create_session(body: ChatSessionCreateIn, request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/"
-    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump())
 
 
 @app.post("/proxy/chat/sessions/", include_in_schema=False)
@@ -340,7 +318,7 @@ async def proxy_create_session(request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/"
-    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
 
 
 @app.get("/chatbot/api/chats/{session_id}", tags=["Chats"], summary="Get a specific chat")
@@ -351,7 +329,7 @@ async def proxy_get_session(session_id: str, request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
-    return await _proxy_json_request("GET", url, headers=_chat_backend_headers(request), auth=_upstream_basic_auth())
+    return await _proxy_json_request("GET", url, headers=_chat_backend_headers(request))
 
 
 @app.patch("/chatbot/api/chats/{session_id}", tags=["Chats"], summary="Update chat metadata")
@@ -360,7 +338,7 @@ async def api_patch_session(session_id: str, body: ChatSessionPatchIn, request: 
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
     payload = body.model_dump(exclude_none=True)
-    return await _proxy_json_request("PATCH", url, headers=_chat_backend_headers(request), json_body=payload, auth=_upstream_basic_auth())
+    return await _proxy_json_request("PATCH", url, headers=_chat_backend_headers(request), json_body=payload)
 
 
 @app.patch("/proxy/chat/sessions/{session_id}/", include_in_schema=False)
@@ -368,7 +346,7 @@ async def proxy_patch_session(session_id: str, request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
-    return await _proxy_json_request("PATCH", url, headers=_chat_backend_headers(request), json_body=await request.json(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("PATCH", url, headers=_chat_backend_headers(request), json_body=await request.json())
 
 
 @app.delete("/chatbot/api/chats/{session_id}", tags=["Chats"], summary="Delete a specific chat")
@@ -379,7 +357,7 @@ async def proxy_delete_session(session_id: str, request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/"
-    return await _proxy_json_request("DELETE", url, headers=_chat_backend_headers(request), auth=_upstream_basic_auth())
+    return await _proxy_json_request("DELETE", url, headers=_chat_backend_headers(request))
 
 
 @app.post("/chatbot/api/chats/log-turn", tags=["Chats"], summary="Store a completed chat turn")
@@ -388,7 +366,7 @@ async def api_log_turn(body: ChatTurnLogIn, request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/log-turn/"
     logger.info(f"Proxying chat log to {url}")
-    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump())
 
 
 @app.post("/chatbot/api/chats/{session_id}/log-turn", tags=["Chats"], summary="Store a completed chat turn for an existing chat")
@@ -404,7 +382,7 @@ async def proxy_log_turn(request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/log-turn/"
     logger.info(f"Proxying chat log to {url}")
-    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
 
 
 @app.post("/chatbot/api/chats/{session_id}/message/{message_id}/feedback", tags=["Chats"], summary="Add feedback to a specific message")
@@ -412,7 +390,7 @@ async def api_message_feedback(session_id: str, message_id: str, body: MessageFe
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/message/{message_id}/feedback/"
-    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=body.model_dump())
 
 
 @app.post("/proxy/chat/sessions/{session_id}/message/{message_id}/feedback/", include_in_schema=False)
@@ -420,7 +398,7 @@ async def proxy_message_feedback(session_id: str, message_id: str, request: Requ
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/sessions/{session_id}/message/{message_id}/feedback/"
-    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
 
 
 @app.get("/chatbot/api/users/me/profile", tags=["User Profile"], summary="Read the current user's profile")
@@ -428,7 +406,7 @@ async def api_get_user_profile(request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/user/profile/"
-    return await _proxy_json_request("GET", url, headers={"Authorization": request.headers.get("Authorization", "")}, auth=_upstream_basic_auth())
+    return await _proxy_json_request("GET", url, headers={"Authorization": request.headers.get("Authorization", "")})
 
 
 @app.patch("/chatbot/api/users/me/profile", tags=["User Profile"], summary="Update the current user's profile")
@@ -442,7 +420,6 @@ async def api_patch_user_profile(body: UserProfilePatchIn, request: Request):
         url,
         headers={"Authorization": request.headers.get("Authorization", "")},
         json_body=payload,
-        auth=_upstream_basic_auth(),
     )
 
 
@@ -459,7 +436,6 @@ async def api_get_user_facts(request: Request, category: Optional[str] = None, l
         url,
         headers={"Authorization": request.headers.get("Authorization", "")},
         params=params,
-        auth=_upstream_basic_auth(),
     )
 
 
@@ -473,7 +449,6 @@ async def api_add_user_fact(body: UserFactCreateIn, request: Request):
         url,
         headers={"Authorization": request.headers.get("Authorization", "")},
         json_body=body.model_dump(),
-        auth=_upstream_basic_auth(),
     )
 
 
@@ -504,7 +479,7 @@ async def api_logout(body: LogoutIn):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/fastapi/logout/"
-    return await _proxy_json_request("POST", url, json_body=body.model_dump(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, json_body=body.model_dump())
 
 
 @app.post("/proxy/logout/", include_in_schema=False)
@@ -512,4 +487,4 @@ async def proxy_logout(request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/fastapi/logout/"
-    return await _proxy_json_request("POST", url, json_body=await request.json(), auth=_upstream_basic_auth())
+    return await _proxy_json_request("POST", url, json_body=await request.json())
