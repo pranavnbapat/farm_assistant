@@ -74,6 +74,17 @@ class MessageFeedbackIn(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class FollowUpsIn(BaseModel):
+    user_message: str = Field(min_length=1, max_length=4000)
+    assistant_message: str = Field(min_length=1, max_length=8000)
+    language: Optional[str] = Field(default=None, examples=["en-GB", "fr-FR"])
+
+
+class FollowUpsOut(BaseModel):
+    follow_ups: List[str] = Field(default_factory=list)
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
 class LogoutIn(BaseModel):
     email: str
 

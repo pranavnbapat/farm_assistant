@@ -46,7 +46,7 @@ from app.services.prompt_service import (
 )
 from app.services.search_service import build_search_payload, collect_os_items
 from app.services.user_profile_service import UserProfileService
-from app.schemas import AskIn, ChatMessageStreamIn, SummariseIn, SummariseOut
+from app.schemas import AskIn, ChatMessageStreamIn, FollowUpsIn, FollowUpsOut, SummariseIn, SummariseOut
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
@@ -1024,3 +1024,92 @@ async def summarise(inp: SummariseIn) -> SummariseOut:
             "temperature": temperature,
         },
     )
+
+
+_FOLLOW_UPS_SYSTEM_PROMPT = (
+    "You suggest follow-up questions for an agricultural assistant on the EU-FarmBook platform. "
+    "Given the user's last question and the assistant's reply, propose 3 short, distinct follow-up "
+    "questions the user might naturally ask next. Each follow-up must:\n"
+    "- be a single question, phrased in the user's voice (\"How do I...\", \"What about...\")\n"
+    "- stay strictly on agriculture, farming, agri-tech, food systems, or EU-FarmBook content\n"
+    "- be no longer than 80 characters\n"
+    "- be different from each other and from the user's prior question\n"
+    "- be in the same language as the user's prior question\n\n"
+    "Return ONLY a JSON array of exactly 3 strings. No prose, no markdown, no keys. "
+    "If you cannot produce useful suggestions, return [].\n"
+)
+
+
+def _parse_follow_ups(raw: str) -> list[str]:
+    if not raw:
+        return []
+
+    text = raw.strip()
+    # Strip any leading/trailing fences the model might emit despite instructions.
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()
+        if not candidate:
+            continue
+        if len(candidate) > 120:
+            candidate = candidate[:120].rstrip()
+        normalized = candidate.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(candidate)
+        if len(cleaned) >= 3:
+            break
+    return cleaned
+
+
+@router.post("/chatbot/api/follow-ups", response_model=FollowUpsOut, tags=["Chats"], summary="Suggest follow-up questions for the last turn")
+async def follow_ups(inp: FollowUpsIn) -> FollowUpsOut:
+    user_msg = (inp.user_message or "").strip()
+    assistant_msg = (inp.assistant_message or "").strip()
+
+    if not user_msg or not assistant_msg:
+        return FollowUpsOut(follow_ups=[], meta={"reason": "empty_input"})
+
+    language_hint = ""
+    if inp.language:
+        language_hint = f"\nUser's language: {inp.language}\n"
+
+    prompt = (
+        f"{_FOLLOW_UPS_SYSTEM_PROMPT}"
+        f"{language_hint}\n"
+        f"User question:\n{user_msg[:1500]}\n\n"
+        f"Assistant reply:\n{assistant_msg[:3000]}\n\n"
+        "Return JSON now."
+    )
+
+    try:
+        raw = await generate_once(prompt, temperature=0.3, max_tokens=180)
+    except httpx.HTTPStatusError as e:
+        body = (e.response.text or "")[:300]
+        logger.error(f"Follow-ups LLM error {e.response.status_code}: {body}")
+        return FollowUpsOut(follow_ups=[], meta={"upstream_status": e.response.status_code})
+    except Exception as e:
+        logger.warning(f"Follow-ups generation failed: {e}")
+        return FollowUpsOut(follow_ups=[], meta={"error": str(e)[:200]})
+
+    suggestions = _parse_follow_ups(raw)
+    return FollowUpsOut(follow_ups=suggestions, meta={"model": S.VLLM_MODEL})
