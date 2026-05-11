@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     OPENSEARCH_API_PWD: str | None = None
     VERIFY_SSL: bool = True
     OS_API_PATH: str = "/neural_search_relevant"
+    OS_RAG_API_PATH: str = "/llm_retrieve"
 
     # --- LLM / vLLM ---
     VLLM_URL: str = "http://localhost:8000"

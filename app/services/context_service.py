@@ -62,8 +62,8 @@ def build_context_and_sources(
         url    = src.get("@id")
         subtitle = (src.get("subtitle") or "").strip()
         desc = (src.get("description") or "").strip()
-        proj = (src.get("project_display_name") or "")
-        acronym = (src.get("project_acronym") or "")
+        proj = (src.get("project_display_name") or src.get("projectDisplayName") or src.get("project_name") or src.get("projectName") or "")
+        acronym = (src.get("project_acronym") or src.get("projectAcronym") or "")
         ptype = (src.get("project_type") or "")
         license_ = (src.get("license") or "")
         keywords = src.get("keywords") or []
@@ -72,7 +72,7 @@ def build_context_and_sources(
         langs = src.get("languages") or []
         creators = src.get("creators") or []
         datec = (src.get("date_of_completion") or "")
-        nice_url = (src.get("project_url") or url or None)
+        nice_url = (src.get("project_url") or src.get("projectUrl") or url or None)
 
         # Build a compact provenance string, e.g. "NETPOULSAFE (Horizon 2020)"
         proj_str = ""
@@ -119,6 +119,7 @@ def build_context_and_sources(
             header_parts.append("Topics: " + ", ".join(topics[:6]))
         header = "\n".join(header_parts).strip()
 
+        llm_context = (src.get("llm_context") or "").strip() if isinstance(src.get("llm_context"), str) else ""
         flat_list = src.get("ko_content_flat")
         flat_text = ""
         if isinstance(flat_list, list):
@@ -138,10 +139,13 @@ def build_context_and_sources(
                     break
 
         parts: list[str] = []
-        if header: parts.append(header)
-        if chosen_paras:
-            parts.append("Content:\n- " + "\n- ".join(chosen_paras))
-        chunk = "\n".join(parts).strip() or (f"Title: {title}" if title else "")
+        if llm_context:
+            chunk = llm_context[:2000]
+        else:
+            if header: parts.append(header)
+            if chosen_paras:
+                parts.append("Content:\n- " + "\n- ".join(chosen_paras))
+            chunk = "\n".join(parts).strip() or (f"Title: {title}" if title else "")
 
         if chunk:
             chunk = chunk[:2000]

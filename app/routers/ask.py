@@ -344,6 +344,41 @@ def _looks_standalone(user_q: str) -> bool:
     return len(words) >= 7
 
 
+_AGRI_HINT_TERMS = {
+    "agriculture", "agricultural", "farming", "farm", "farmer", "farmers",
+    "crop", "crops", "soil", "livestock", "poultry", "cattle", "tractor",
+    "irrigation", "fertilizer", "fertiliser", "manure", "weed", "weeds",
+    "pest", "pests", "crop rotation", "agri", "food system", "greenhouse",
+    "horticulture", "aquaculture", "forestry", "eufarmbook", "eu-farmbook",
+}
+
+_CONSUMER_TECH_OFFTOPIC_TERMS = {
+    "iphone", "ipad", "macbook", "ios", "apple watch",
+    "samsung", "galaxy", "android", "pixel", "google pixel",
+    "oneplus", "xiaomi", "huawei", "oppo", "vivo",
+    "smartphone", "phone", "mobile phone", "tablet", "laptop",
+    "airpods", "earbuds", "smartwatch",
+}
+
+
+def _hard_route_turn_mode(user_q: str) -> Optional[str]:
+    """
+    Deterministic guardrail for obviously off-topic standalone queries.
+    This runs before the model router so repeated non-agriculture prompts do
+    not drift into an answerable mode because of prior agricultural history.
+    """
+    q = (user_q or "").strip().lower()
+    if not q:
+        return None
+    if _mentions_file_or_document(q):
+        return None
+    if any(term in q for term in _AGRI_HINT_TERMS):
+        return None
+    if any(term in q for term in _CONSUMER_TECH_OFFTOPIC_TERMS):
+        return "off_topic"
+    return None
+
+
 async def _normalize_query_for_retrieval(text: str) -> str:
     """
     Best-effort query cleanup for spelling/grammar to improve retrieval.
@@ -567,8 +602,13 @@ async def ask_stream(
                 return effective_q
             return await _normalize_query_for_retrieval(effective_q)
 
+        forced_turn_strategy = _hard_route_turn_mode(user_q)
+
         async def _strategy_task() -> str:
-            return await _decide_turn_strategy(prompt_q, history_text)
+            if forced_turn_strategy:
+                return forced_turn_strategy
+            strategy_history = "" if _looks_standalone(user_q) else history_text
+            return await _decide_turn_strategy(prompt_q, strategy_history)
 
         retrieval_q, turn_strategy, profile_context = await asyncio.gather(
             _retrieval_q_task(),
@@ -636,8 +676,7 @@ async def ask_stream(
             search_payload = build_search_payload(inp)
             headers = os_headers()
             auth = os_auth()
-            last_page = inp.page if (inp.page is not None and inp.page >= 1) else 1
-            pages = list(range(1, last_page + 1))
+            pages = [1]
 
             t_search_start = time.perf_counter()
 

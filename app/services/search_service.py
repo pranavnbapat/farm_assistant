@@ -12,22 +12,24 @@ from app.schemas import AskIn
 logger = logging.getLogger("farm-assistant.search")
 S = get_settings()
 
+
+def _rag_url() -> str:
+    return f"{S.OPENSEARCH_API_URL.rstrip('/')}{S.OS_RAG_API_PATH}"
+
 def build_search_payload(inp: AskIn) -> Dict[str, Any]:
-    page = 1 if (inp.page is None or inp.page < 1) else inp.page
     default_k = 5
+    retrieval_k = inp.top_k if inp.top_k is not None else inp.k
+    if not isinstance(retrieval_k, int) or retrieval_k <= 0:
+        retrieval_k = default_k
 
     payload: Dict[str, Any] = {
         "search_term": inp.question,
-        "page": page,
+        "page": 1,
         "dev": False,
         "model": "msmarco",
-        "include_fulltext": True,
         "sort_by": "score_desc",
+        "k": retrieval_k,
     }
-
-    k_val = inp.k if inp.k is not None else default_k
-    if isinstance(k_val, int) and k_val > 0:
-        payload["k"] = k_val
 
     return payload
 
@@ -40,7 +42,7 @@ async def fetch_os_page(
 ) -> Dict[str, Any]:
     payload = dict(base_payload)
     payload["page"] = page_no
-    url = f"{S.OPENSEARCH_API_URL.rstrip('/')}{S.OS_API_PATH}"
+    url = _rag_url()
     res = await client.post(url, json=payload, headers=headers, auth=auth)
     res.raise_for_status()
     return res.json()
@@ -78,14 +80,13 @@ async def probe_has_hits(
     headers: Dict[str, str],
     auth: Optional[httpx.Auth]
 ) -> bool:
-    url = f"{S.OPENSEARCH_API_URL.rstrip('/')}{S.OS_API_PATH}"
+    url = _rag_url()
     payload = {
         "search_term": query_text,
         "page": 1,
         "k": 1,                     # just check if anything would match
         "dev": False,
         "model": "msmarco",
-        "include_fulltext": False,  # make payload small
         "sort_by": "score_desc",
     }
     try:
