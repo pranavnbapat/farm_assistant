@@ -220,6 +220,33 @@ def build_conversation_only_messages(
     return _assemble_messages(system_text, history_messages, question, user_profile_context=None)
 
 
+def build_clarification_messages(
+    question: str,
+    history_messages: Optional[list[dict]] = None,
+    user_profile_context: Optional[str] = None,
+) -> list[dict]:
+    """
+    For empty / punctuation-only / otherwise underspecified inputs.
+    Ask for a concrete agriculture-related question and do not infer intent from
+    profile, memory, or retrieved sources.
+    """
+    directives = [
+        _IDENTITY,
+        (
+            "The user's latest message is too short, vague, or underspecified to answer "
+            "substantively. Do not infer hidden intent from profile, memory, or prior chats."
+        ),
+        (
+            "Reply in 1 short sentence asking the user to type a clear agriculture-related "
+            "question. Do not answer any likely topic, do not mention profile details, and "
+            "do not list examples unless the user explicitly asks for help."
+        ),
+        _LANGUAGE_RULE,
+    ]
+    system_text = "\n\n".join(directives)
+    return _assemble_messages(system_text, history_messages, question, user_profile_context=None)
+
+
 def build_off_topic_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,

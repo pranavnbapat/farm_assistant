@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
@@ -36,6 +36,7 @@ from app.services.pdf_service import (
 )
 from app.services.prompt_service import (
     build_capabilities_messages,
+    build_clarification_messages,
     build_general_knowledge_messages,
     build_messages,
     build_conversation_only_messages,
@@ -51,6 +52,16 @@ from app.schemas import AskIn, ChatMessageStreamIn, FollowUpsIn, FollowUpsOut, S
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
 router = APIRouter()
+
+TurnMode = Literal[
+    "clarification_only",
+    "off_topic",
+    "history_only",
+    "conversation_only",
+    "assistant_capabilities",
+    "general_knowledge",
+    "normal",
+]
 
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
@@ -151,7 +162,7 @@ def _history_scope(history_text: str) -> str:
     return hashlib.sha256(history_text.encode("utf-8")).hexdigest()[:16]
 
 
-async def _decide_turn_strategy(question: str, history_text: str) -> str:
+async def _decide_turn_strategy(question: str, history_text: str) -> TurnMode:
     """
     Use the model to decide whether the current turn should be answered strictly
     from conversation history, handled as a conversational turn, answered as a capability question,
@@ -344,6 +355,21 @@ def _looks_standalone(user_q: str) -> bool:
     return len(words) >= 7
 
 
+def _is_meaningless_prompt(text: str) -> bool:
+    q = (text or "").strip()
+    if not q:
+        return True
+    if len(q) <= 4 and _re.fullmatch(r"[\W_]+", q):
+        return True
+
+    lowered = q.lower()
+    trivial = {
+        "?", "??", "???", ".", "..", "...",
+        "huh", "hm", "hmm", "uh", "um", "ok?", "what?", "excuse me?",
+    }
+    return lowered in trivial
+
+
 _AGRI_HINT_TERMS = {
     "agriculture", "agricultural", "farming", "farm", "farmer", "farmers",
     "crop", "crops", "soil", "livestock", "poultry", "cattle", "tractor",
@@ -360,6 +386,24 @@ _CONSUMER_TECH_OFFTOPIC_TERMS = {
     "airpods", "earbuds", "smartwatch",
 }
 
+_PROMPT_INJECTION_TERMS = {
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "you are now a general assistant",
+    "you are now",
+    "act as",
+    "pretend to be",
+    "system prompt",
+    "developer prompt",
+    "jailbreak",
+}
+
+_GENERAL_OFFTOPIC_TERMS = {
+    "president", "prime minister", "king", "queen", "celebrity", "movie",
+    "song", "lyrics", "football", "basketball", "politics", "france",
+    "germany", "united states", "usa", "election",
+}
+
 
 def _hard_route_turn_mode(user_q: str) -> Optional[str]:
     """
@@ -369,14 +413,49 @@ def _hard_route_turn_mode(user_q: str) -> Optional[str]:
     """
     q = (user_q or "").strip().lower()
     if not q:
-        return None
+        return "clarification_only"
+    if _is_meaningless_prompt(q):
+        return "clarification_only"
     if _mentions_file_or_document(q):
         return None
-    if any(term in q for term in _AGRI_HINT_TERMS):
-        return None
+    has_agri_hint = any(term in q for term in _AGRI_HINT_TERMS)
+    if any(term in q for term in _PROMPT_INJECTION_TERMS):
+        return None if has_agri_hint else "off_topic"
     if any(term in q for term in _CONSUMER_TECH_OFFTOPIC_TERMS):
         return "off_topic"
+    if any(term in q for term in _GENERAL_OFFTOPIC_TERMS) and not has_agri_hint:
+        return "off_topic"
+    if has_agri_hint:
+        return None
     return None
+
+
+def _routing_history_for_query(user_q: str, history_text: str) -> str:
+    """
+    Keep history out of the lightweight router for clearly standalone queries.
+    This reduces drift while preserving history-aware routing for actual follow-ups.
+    """
+    return "" if _looks_standalone(user_q) else history_text
+
+
+async def _route_turn_mode(
+    *,
+    user_q: str,
+    prompt_q: str,
+    history_text: str,
+) -> TurnMode:
+    """
+    Three-stage routing:
+    1. Hard deterministic guardrails for obvious cases.
+    2. Lightweight LLM classifier for ambiguous cases only.
+    3. Default to `normal` on classifier failure.
+    """
+    forced_mode = _hard_route_turn_mode(user_q)
+    if forced_mode:
+        return forced_mode
+
+    strategy_history = _routing_history_for_query(user_q, history_text)
+    return await _decide_turn_strategy(prompt_q, strategy_history)
 
 
 async def _normalize_query_for_retrieval(text: str) -> str:
@@ -560,7 +639,11 @@ async def ask_stream(
         #   2. Skipping `_decide_turn_strategy` when a heuristic classifier is confident.
         #   3. Running whatever survives concurrently with profile loading.
 
+        forced_turn_strategy = _hard_route_turn_mode(user_q)
+
         async def _profile_task() -> str:
+            if forced_turn_strategy == "clarification_only":
+                return ""
             if pause_personalization:
                 # User asked to pause memory for this turn — don't load or inject.
                 return ""
@@ -602,13 +685,12 @@ async def ask_stream(
                 return effective_q
             return await _normalize_query_for_retrieval(effective_q)
 
-        forced_turn_strategy = _hard_route_turn_mode(user_q)
-
-        async def _strategy_task() -> str:
-            if forced_turn_strategy:
-                return forced_turn_strategy
-            strategy_history = "" if _looks_standalone(user_q) else history_text
-            return await _decide_turn_strategy(prompt_q, strategy_history)
+        async def _strategy_task() -> TurnMode:
+            return await _route_turn_mode(
+                user_q=user_q,
+                prompt_q=prompt_q,
+                history_text=history_text,
+            )
 
         retrieval_q, turn_strategy, profile_context = await asyncio.gather(
             _retrieval_q_task(),
@@ -649,7 +731,10 @@ async def ask_stream(
         t_ctx_start = t_search_start
         t_ctx_end = t_search_start
 
-        if turn_strategy == "off_topic":
+        if turn_strategy == "clarification_only":
+            async for x in emit("status", {"stage": "Clarify", "message": "Need a clearer question..."}):
+                yield x
+        elif turn_strategy == "off_topic":
             # Non-agriculture / chit-chat / quote / model-identity probe: skip retrieval
             # entirely and route to a polite refusal builder.
             async for x in emit("status", {"stage": "Scope", "message": "Off-topic question, skipping search..."}):
@@ -780,14 +865,14 @@ async def ask_stream(
                 "id": getattr(s, "id", None),
                 "title": getattr(s, "title", None),
                 "project": getattr(s, "project", None),
-                "url": (getattr(s, "display_url", None) or getattr(s, "url", None)),
+                "url": getattr(s, "url", None),
                 "display_url": getattr(s, "display_url", None),
                 "license": getattr(s, "license", None),
             }
             for i, s in enumerate(sources)
         ]
         grounding_state = "general_fallback" if (turn_strategy == "normal" and not contexts) else "euf_supported"
-        if turn_strategy in {"off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge"}:
+        if turn_strategy in {"clarification_only", "off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge"}:
             grounding_state = turn_strategy
 
         # --- Build prompt with conversation history ---
@@ -797,7 +882,13 @@ async def ask_stream(
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
         history_messages_for_prompt = state.get("messages", [])
-        if turn_strategy == "off_topic":
+        if turn_strategy == "clarification_only":
+            messages = build_clarification_messages(
+                question=user_q,
+                history_messages=history_messages_for_prompt,
+                user_profile_context=None,
+            )
+        elif turn_strategy == "off_topic":
             messages = build_off_topic_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
@@ -926,7 +1017,7 @@ async def ask_stream(
             and session_id
             and auth_token
             and not pause_personalization
-            and turn_strategy not in ("off_topic", "conversation_only", "assistant_capabilities")
+            and turn_strategy not in ("clarification_only", "off_topic", "conversation_only", "assistant_capabilities")
         ):
             asyncio.create_task(
                 UserProfileService.process_conversation_turn(
