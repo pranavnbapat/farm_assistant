@@ -85,10 +85,10 @@ class ExtractedProfile:
     crops: List[str] = field(default_factory=list)
     topics: List[str] = field(default_factory=list)
     facts: List[UserFact] = field(default_factory=list)
-    # Free-form memory notes — things the user said that are worth remembering
-    # but don't fit one of the structured fact categories. Examples: dietary
-    # restrictions, project context, communication preferences phrased in prose,
-    # multi-clause goals.
+    # Free-form memory notes — stable, user-centric details worth remembering
+    # across conversations that do not fit the structured fact categories.
+    # These should be long-lived preferences or identity/context signals, not
+    # turn summaries.
     memory_notes: List[str] = field(default_factory=list)
     communication_style: Optional[str] = None
     preferred_language: Optional[str] = None
@@ -126,7 +126,7 @@ Extract and respond ONLY with valid JSON in this exact format:
         }}
     ],
     "memory_notes": [
-        "free-form sentence (in English) capturing an EXPLICIT fact the user stated about themselves that does NOT fit the structured fact categories above"
+        "short canonical memory note in English, capturing an EXPLICIT long-term fact or preference the user stated about themselves that does NOT fit the structured fact categories above"
     ],
     "communication_preferences": {{
         "style": "detailed|concise|technical|null",
@@ -156,8 +156,10 @@ Important Rules:
 7. Capture communication preferences if user mentions them ("explain simply", "technical details", etc.)
 8. `memory_notes` are for long-term memory and are subject to a STRICT bar:
    - Each note must reflect something the user EXPLICITLY stated about themselves in this message. Direct first-person assertions only ("I am vegan", "I'm writing a thesis on X", "skip the preamble in your answers", "my farm is run by my two daughters").
+   - Write notes in a compact canonical form suitable for display and reuse later, for example: "Prefers concise answers", "Writing a thesis on soil carbon", "Farm is run by two daughters". Do NOT start notes with "User ...".
    - DO NOT speculate about the user's emotional state, mood, frustration, intentions, motivations, or interests. No inferences, no profiling, no "user may be...", "user is likely...", "user seems to be...".
    - DO NOT summarize what the conversation is about. The notes are about the user as a person, not about the current topic.
+   - DO NOT store ephemeral session events like what the user just asked for, how they reacted to a previous answer, or that they requested a format/style for a single turn unless it is clearly a persistent preference.
    - DO NOT create a note that uses hedging words like "may", "might", "possibly", "likely", "perhaps", "seems", "appears", "could be", "indicating".
    - DO NOT invent facts. If the message contains nothing the user explicitly stated about themselves, return an empty array.
    - When in doubt, leave it out. The default state of `memory_notes` is `[]`. Only add when the user has unmistakably told you a stable fact about themselves.
@@ -421,6 +423,96 @@ Output: {{
         "interested in", "exploring", "seeking clarification",
     )
 
+    _DISALLOWED_NOTE_PREFIXES = (
+        "user ",
+        "the user ",
+        "assistant ",
+        "the assistant ",
+    )
+
+    _DISALLOWED_NOTE_PATTERNS = (
+        "asked about",
+        "asking about",
+        "requested",
+        "requesting",
+        "seeking clarification",
+        "previous response",
+        "previous interaction",
+        "previous answer",
+        "conversation",
+        "chat history",
+        "follow-up question",
+        "follow up question",
+        "tabular format",
+        "table format",
+        "pretending to",
+        "hack",
+        "ignore previous instructions",
+        "general assistant",
+        "question about",
+        "wants to talk",
+        "doesn't want to talk",
+        "don't want to talk",
+        "stated '",
+        "states '",
+    )
+
+    _STABLE_MEMORY_SIGNALS = (
+        "prefers ",
+        "prefer ",
+        "prefers responses in ",
+        "skip the preamble",
+        "writing ",
+        "studying ",
+        "researching ",
+        "working on ",
+        "works on ",
+        "farm is ",
+        "farms in ",
+        "based in ",
+        "lives in ",
+        "grows ",
+        "raises ",
+        "uses ",
+        "runs ",
+        "operates ",
+        "allergic ",
+        "vegan",
+        "vegetarian",
+        "gluten-free",
+    )
+
+    @classmethod
+    def _is_memory_note_usable(cls, note_text: str) -> bool:
+        """
+        Keep only stable, user-centric long-term memory. Reject turn summaries,
+        adversarial content, and meta commentary even if the model emitted them.
+        """
+        text = (note_text or "").strip()
+        if len(text) < 8:
+            return False
+
+        lowered = text.lower()
+        padded = f" {lowered} "
+
+        if any(lowered.startswith(prefix) for prefix in cls._DISALLOWED_NOTE_PREFIXES):
+            return False
+        if any(h in padded for h in cls._HEDGE_PATTERNS):
+            return False
+        if any(topic in lowered for topic in cls._SPECULATIVE_TOPICS):
+            return False
+        if any(pattern in lowered for pattern in cls._DISALLOWED_NOTE_PATTERNS):
+            return False
+
+        # Avoid noisy note shapes like copied quotes or symbol-heavy artifacts.
+        alpha_chars = sum(1 for ch in text if ch.isalpha())
+        if alpha_chars < max(6, len(text) // 3):
+            return False
+
+        # Free-form memory should be stricter than general facts: only keep
+        # durable preferences and identity/context that look reusable later.
+        return any(signal in lowered for signal in cls._STABLE_MEMORY_SIGNALS)
+
     @classmethod
     def _looks_like_explicit_fact(cls, note_text: str) -> bool:
         """
@@ -428,16 +520,20 @@ Output: {{
         explicit user statement. Cheap, language-rough check; works alongside
         the prompt-level instructions.
         """
-        text = (note_text or "").strip().lower()
-        if not text or len(text) < 8:
-            return False
-        # Pad with spaces so leading/trailing word checks via " word " hit cleanly.
-        padded = f" {text} "
-        if any(h in padded for h in cls._HEDGE_PATTERNS):
-            return False
-        if any(t in text for t in cls._SPECULATIVE_TOPICS):
-            return False
-        return True
+        return cls._is_memory_note_usable(note_text)
+
+    @classmethod
+    def filter_memory_notes(cls, memory_notes: List[Dict], limit: Optional[int] = None) -> List[Dict]:
+        """Filter legacy and newly-extracted memory notes down to usable items."""
+        filtered: List[Dict] = []
+        for note in memory_notes or []:
+            text = (note.get("note_text") or "").strip()
+            if not cls._is_memory_note_usable(text):
+                continue
+            filtered.append(note)
+            if limit is not None and len(filtered) >= limit:
+                break
+        return filtered
 
     @classmethod
     async def delete_memory_note(cls, note_id: int, auth_token: str) -> bool:
@@ -723,7 +819,10 @@ Output: {{
             MEMORY_NOTE_CAP = 30
             DEDUP_THRESHOLD = 0.55  # Lower than fact dedup; more aggressive merging.
 
-            existing_notes = await cls.get_memory_notes(user_uuid, auth_token, limit=MEMORY_NOTE_CAP)
+            existing_notes = cls.filter_memory_notes(
+                await cls.get_memory_notes(user_uuid, auth_token, limit=MEMORY_NOTE_CAP),
+                limit=MEMORY_NOTE_CAP,
+            )
             existing_note_dicts = [{"text": n.get("note_text", "")} for n in existing_notes]
             at_cap = len(existing_notes) >= MEMORY_NOTE_CAP
             notes_added = 0
@@ -820,8 +919,10 @@ Output: {{
         if memory_notes:
             # Free-form memory notes — keep the top few by confidence.
             important_notes = [
-                n for n in memory_notes if float(n.get('confidence', 0) or 0) > 0.6
-            ][:5]
+                n
+                for n in cls.filter_memory_notes(memory_notes, limit=5)
+                if float(n.get('confidence', 0) or 0) > 0.6
+            ]
             for note in important_notes:
                 text = (note.get('note_text') or '').strip()
                 if text:

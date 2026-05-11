@@ -456,13 +456,14 @@ async def api_add_user_fact(body: UserFactCreateIn, request: Request):
 async def api_get_user_memory(request: Request, limit: int = 20):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
-    url = f"{S.CHAT_BACKEND_URL}/chat/user/memory/"
-    return await _proxy_json_request(
-        "GET",
-        url,
-        headers={"Authorization": request.headers.get("Authorization", "")},
-        params={"limit": limit},
-    )
+    auth_token = request.headers.get("Authorization", "")
+    user_uuid = _extract_user_uuid_from_token(auth_token) if auth_token else None
+    if not user_uuid:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+    notes = await UserProfileService.get_memory_notes(user_uuid, auth_token, limit=max(limit * 3, 30))
+    filtered_notes = UserProfileService.filter_memory_notes(notes, limit=limit)
+    return JSONResponse(content={"results": filtered_notes}, status_code=200)
 
 
 @app.post("/chatbot/api/users/me/memory", tags=["User Profile"], summary="Add a free-form memory note for the current user")
