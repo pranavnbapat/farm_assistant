@@ -25,7 +25,11 @@ from app.services.chat_history import (
     save_chat_state,
     CHAT_BACKEND_URL,
 )
-from app.services.context_service import build_context_and_sources, estimate_retrieval_quality
+from app.services.context_service import (
+    build_context_and_sources,
+    estimate_retrieval_quality,
+    filter_items_by_min_score,
+)
 from app.services.pdf_service import (
     get_docs_for_user,
     build_pdf_contexts,
@@ -776,12 +780,27 @@ async def ask_stream(
 
             t_search_end = time.perf_counter()
 
+            filtered_items, score_filter_stats = filter_items_by_min_score(
+                items,
+                min_score=S.RETRIEVAL_MIN_SCORE,
+            )
+            if score_filter_stats["discarded_count"] > 0:
+                logger.info(
+                    "Score-filtered retrieval items: kept=%s discarded=%s threshold=%.3f",
+                    score_filter_stats["kept_count"],
+                    score_filter_stats["discarded_count"],
+                    score_filter_stats["min_score_threshold"],
+                )
+            items = filtered_items
+
             # --- Build contexts ---
             async for x in emit("status", {"stage": "Context", "message": "Preparing context..."}):
                 yield x
 
             t_ctx_start = time.perf_counter()
-            t_k = inp.top_k if inp.top_k is not None else S.TOP_K
+            t_k = inp.top_k if inp.top_k is not None else inp.k
+            if not isinstance(t_k, int) or t_k <= 0:
+                t_k = S.TOP_K
             contexts, sources = build_context_and_sources(
                 items=items, question=retrieval_q, top_k=t_k, max_context_chars=S.MAX_CONTEXT_CHARS
             )

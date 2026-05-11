@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     NUM_CTX: int = 4096
     TOP_K: int = 5
     MAX_CONTEXT_CHARS: int = 24000
+    RETRIEVAL_CANDIDATE_K: int = 10
+    RETRIEVAL_MIN_SCORE: float = 1.0
 
     # pydantic v2 config
     model_config = SettingsConfigDict(

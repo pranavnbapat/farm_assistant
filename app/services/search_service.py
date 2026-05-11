@@ -18,9 +18,13 @@ def _rag_url() -> str:
 
 def build_search_payload(inp: AskIn) -> Dict[str, Any]:
     default_k = 5
-    retrieval_k = inp.top_k if inp.top_k is not None else inp.k
-    if not isinstance(retrieval_k, int) or retrieval_k <= 0:
-        retrieval_k = default_k
+    requested_k = inp.top_k if inp.top_k is not None else inp.k
+    if not isinstance(requested_k, int) or requested_k <= 0:
+        requested_k = default_k
+
+    # Pull a slightly wider candidate set than the final grounded context so
+    # Farm Assistant can discard weak OpenSearch hits before prompting the LLM.
+    retrieval_k = max(int(requested_k), int(S.RETRIEVAL_CANDIDATE_K))
 
     payload: Dict[str, Any] = {
         "search_term": inp.question,

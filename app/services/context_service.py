@@ -189,3 +189,38 @@ def estimate_retrieval_quality(user_q: str, items: list[dict], top_n: int = 3) -
     # Mean of top_n overlap; clamp into [0..1]
     s = sum(scores) / len(scores)
     return max(0.0, min(1.0, s))
+
+
+def filter_items_by_min_score(items: list[dict], min_score: float) -> tuple[list[dict], dict[str, int | float]]:
+    """
+    Keep only retrieved items whose OpenSearch score clears a minimum bar.
+    Returns the filtered items and simple stats for logging/debugging.
+    """
+    if min_score <= 0:
+        return items, {
+            "input_count": len(items),
+            "kept_count": len(items),
+            "discarded_count": 0,
+            "min_score_threshold": float(min_score),
+        }
+
+    kept: list[dict] = []
+    discarded = 0
+    for it in items:
+        score = (it.get("_score") if isinstance(it, dict) else None)
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError):
+            numeric_score = None
+
+        if numeric_score is None or numeric_score < float(min_score):
+            discarded += 1
+            continue
+        kept.append(it)
+
+    return kept, {
+        "input_count": len(items),
+        "kept_count": len(kept),
+        "discarded_count": discarded,
+        "min_score_threshold": float(min_score),
+    }
