@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
+from app.services.image_service import create_image_stub, delete_image_for_user
 from app.services.pdf_service import create_pdf_stub, delete_doc_for_user
 
 router = APIRouter()
@@ -66,4 +67,52 @@ async def delete_pdf(request: Request, doc_id: str):
     ok = delete_doc_for_user(doc_id=doc_id, owner_id=owner_id)
     if not ok:
         raise HTTPException(status_code=404, detail="PDF not found.")
+    return {"status": "success", "doc_id": doc_id}
+
+
+@router.post("/chatbot/api/files/image", tags=["Files"], summary="Upload an image for chat context")
+@router.post("/files/image", include_in_schema=False)
+async def upload_image(request: Request, file: UploadFile = File(...)):
+    auth_token = request.headers.get("Authorization", "")
+    owner_id = _extract_user_uuid_from_token(auth_token) if auth_token else None
+    owner_id = owner_id or "anonymous"
+
+    filename = file.filename or ""
+    lowered = filename.lower()
+    allowed_exts = (".jpg", ".jpeg", ".png")
+    allowed_mime = {"image/jpeg", "image/png"}
+
+    if not filename or not lowered.endswith(allowed_exts):
+        raise HTTPException(status_code=400, detail="Only JPG, JPEG, and PNG files are supported.")
+    if file.content_type not in allowed_mime:
+        raise HTTPException(status_code=400, detail="Only JPG, JPEG, and PNG files are supported.")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(payload) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 15MB).")
+
+    doc = create_image_stub(owner_id=owner_id, filename=filename, payload=payload, mime_type=file.content_type)
+    return {
+        "status": "success",
+        "doc_id": doc.doc_id,
+        "filename": doc.filename,
+        "mime_type": doc.mime_type,
+        "summary": "",
+        "processing": "deferred",
+        "created_at": doc.created_at,
+    }
+
+
+@router.delete("/chatbot/api/files/image/{doc_id}", tags=["Files"], summary="Delete an uploaded image")
+@router.delete("/files/image/{doc_id}", include_in_schema=False)
+async def delete_image(request: Request, doc_id: str):
+    auth_token = request.headers.get("Authorization", "")
+    owner_id = _extract_user_uuid_from_token(auth_token) if auth_token else None
+    owner_id = owner_id or "anonymous"
+
+    ok = delete_image_for_user(doc_id=doc_id, owner_id=owner_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Image not found.")
     return {"status": "success", "doc_id": doc_id}

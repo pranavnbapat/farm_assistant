@@ -457,36 +457,14 @@ Output: {{
         "states '",
     )
 
-    _STABLE_MEMORY_SIGNALS = (
-        "prefers ",
-        "prefer ",
-        "prefers responses in ",
-        "skip the preamble",
-        "writing ",
-        "studying ",
-        "researching ",
-        "working on ",
-        "works on ",
-        "farm is ",
-        "farms in ",
-        "based in ",
-        "lives in ",
-        "grows ",
-        "raises ",
-        "uses ",
-        "runs ",
-        "operates ",
-        "allergic ",
-        "vegan",
-        "vegetarian",
-        "gluten-free",
-    )
-
     @classmethod
     def _is_memory_note_usable(cls, note_text: str) -> bool:
         """
-        Keep only stable, user-centric long-term memory. Reject turn summaries,
-        adversarial content, and meta commentary even if the model emitted them.
+        Reject turn summaries, adversarial content, hedged speculation, and
+        meta commentary. A note that survives every disallow check is treated
+        as usable — we do not require a positive keyword match, otherwise
+        legitimate notes in any language or phrasing that doesn't happen to
+        contain an English signal word get hidden from the user.
         """
         text = (note_text or "").strip()
         if len(text) < 8:
@@ -509,9 +487,7 @@ Output: {{
         if alpha_chars < max(6, len(text) // 3):
             return False
 
-        # Free-form memory should be stricter than general facts: only keep
-        # durable preferences and identity/context that look reusable later.
-        return any(signal in lowered for signal in cls._STABLE_MEMORY_SIGNALS)
+        return True
 
     @classmethod
     def _looks_like_explicit_fact(cls, note_text: str) -> bool:

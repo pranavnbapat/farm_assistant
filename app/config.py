@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     VLLM_MODEL: str = "qwen3-30b-a3b-awq"
     VLLM_API_KEY: str | None = None
     RUNPOD_VLLM_HOST: str = ""
+    RUNPOD_VLLM_VISION_HOST: str = ""
+    VLLM_VISION_MODEL: str = ""
+    VLLM_VISION_API_KEY: str | None = None
 
     MAX_TOKENS: int = 768
     MAX_OUTPUT_TOKENS: int = 768
@@ -80,6 +83,9 @@ class Settings(BaseSettings):
             self.VLLM_URL = self.RUNPOD_VLLM_HOST.rstrip("/")
         elif self.VLLM_URL:
             self.VLLM_URL = self.VLLM_URL.rstrip("/")
+
+        if self.RUNPOD_VLLM_VISION_HOST:
+            self.RUNPOD_VLLM_VISION_HOST = self.RUNPOD_VLLM_VISION_HOST.rstrip("/")
 
         return self
 

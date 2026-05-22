@@ -30,6 +30,13 @@ from app.services.context_service import (
     estimate_retrieval_quality,
     filter_items_by_min_score,
 )
+from app.services.image_service import (
+    get_images_for_user,
+    build_image_contexts,
+    ensure_image_processed,
+    upsert_image_attachment_to_backend,
+    images_from_attachment_records,
+)
 from app.services.pdf_service import (
     get_docs_for_user,
     build_pdf_contexts,
@@ -322,8 +329,11 @@ def _is_file_handoff_query(text: str) -> bool:
     canonical = {
         "here you go",
         "see this file",
+        "see this image",
         "check this file",
+        "check this image",
         "this file",
+        "this image",
         "look at this",
         "use this file",
         "read this",
@@ -335,8 +345,19 @@ def _mentions_file_or_document(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
-    keys = {"file", "document", "pdf", "attachment", "this doc", "this file"}
+    keys = {
+        "file", "document", "pdf", "attachment", "this doc", "this file",
+        "image", "photo", "picture", "screenshot", "this image", "this photo",
+    }
     return any(k in t for k in keys)
+
+
+def _attachment_summary_prompt(has_images: bool, has_pdfs: bool, count: int) -> str:
+    if has_images and not has_pdfs:
+        return "Please summarize the uploaded image." if count == 1 else "Please summarize the uploaded images."
+    if has_pdfs and not has_images:
+        return "Please summarize the uploaded PDF." if count == 1 else "Please summarize the uploaded PDFs."
+    return "Please summarize the uploaded attachments."
 
 
 def _should_skip_query_normalization(text: str) -> bool:
@@ -442,6 +463,20 @@ def _routing_history_for_query(user_q: str, history_text: str) -> str:
     return "" if _looks_standalone(user_q) else history_text
 
 
+def _has_offtopic_signal(user_q: str) -> bool:
+    """Any term that explicitly marks the query as out-of-scope."""
+    q = (user_q or "").strip().lower()
+    if not q:
+        return False
+    if any(term in q for term in _CONSUMER_TECH_OFFTOPIC_TERMS):
+        return True
+    if any(term in q for term in _GENERAL_OFFTOPIC_TERMS):
+        return True
+    if any(term in q for term in _PROMPT_INJECTION_TERMS):
+        return True
+    return False
+
+
 async def _route_turn_mode(
     *,
     user_q: str,
@@ -459,7 +494,20 @@ async def _route_turn_mode(
         return forced_mode
 
     strategy_history = _routing_history_for_query(user_q, history_text)
-    return await _decide_turn_strategy(prompt_q, strategy_history)
+    mode = await _decide_turn_strategy(prompt_q, strategy_history)
+
+    # Safety net: the LLM classifier sometimes flags creative-but-on-topic
+    # requests ("draw a farm in ASCII representing wheat or maize") as
+    # off_topic because form (ASCII art / drawing) outweighs subject. If the
+    # query has at least one agriculture hint and no explicit off-topic
+    # markers, treat it as general_knowledge so the assistant answers within
+    # scope without manufacturing citations.
+    if mode == "off_topic":
+        q_lower = (user_q or "").strip().lower()
+        if q_lower and any(term in q_lower for term in _AGRI_HINT_TERMS) and not _has_offtopic_signal(user_q):
+            return "general_knowledge"
+
+    return mode
 
 
 async def _normalize_query_for_retrieval(text: str) -> str:
@@ -580,7 +628,29 @@ async def ask_stream(
     normalized_model = _normalize_model(model)
 
     async def gen():
-        user_q = (q or "").strip()
+        requested_doc_ids = [d.strip() for d in (doc_ids or "").split(",") if d.strip()]
+
+        t0 = time.perf_counter()
+        
+        # Extract auth info from the standard Authorization header.
+        auth_token = request.headers.get("Authorization", "") if request else ""
+        
+        user_uuid = _extract_user_uuid_from_token(auth_token) if auth_token else None
+        owner_scope = user_uuid or "anonymous"
+
+        local_pdf_docs = get_docs_for_user(requested_doc_ids, owner_scope) if requested_doc_ids else []
+        local_image_docs = get_images_for_user(requested_doc_ids, owner_scope) if requested_doc_ids else []
+
+        user_q_was_empty = not bool((q or "").strip())
+        raw_user_q = (q or "").strip()
+        if not raw_user_q and (local_pdf_docs or local_image_docs):
+            raw_user_q = _attachment_summary_prompt(
+                has_images=bool(local_image_docs),
+                has_pdfs=bool(local_pdf_docs),
+                count=len(local_pdf_docs) + len(local_image_docs),
+            )
+
+        user_q = raw_user_q
         if not user_q:
             async for x in emit_app_error({"message": "Empty question"}):
                 yield x
@@ -593,14 +663,6 @@ async def ask_stream(
             }):
                 yield x
             return
-        requested_doc_ids = [d.strip() for d in (doc_ids or "").split(",") if d.strip()]
-
-        t0 = time.perf_counter()
-        
-        # Extract auth info from the standard Authorization header.
-        auth_token = request.headers.get("Authorization", "") if request else ""
-        
-        user_uuid = _extract_user_uuid_from_token(auth_token) if auth_token else None
         
         # Load conversation state
         history_text: str = ""
@@ -682,7 +744,7 @@ async def ask_stream(
         async def _retrieval_q_task() -> str:
             if requested_doc_ids and _is_file_handoff_query(user_q):
                 return (
-                    "Summarize the uploaded PDF(s) with key points and practical takeaways, "
+                    "Summarize the uploaded attachment(s) with key points and practical takeaways, "
                     "then ask one focused follow-up question."
                 )
             if _should_skip_query_normalization(effective_q):
@@ -730,6 +792,15 @@ async def ask_stream(
         )
         contexts: list[str] = []
         sources: list = []
+        attachment_contexts: list[str] = []
+        attachment_sources: list = []
+        retrieval_context_count = 0
+        image_stats = {"total": 0, "agri_related": 0, "non_agri": 0}
+        attachment_handoff = bool(requested_doc_ids) and (
+            _is_file_handoff_query(user_q)
+            or _mentions_file_or_document(user_q)
+            or user_q_was_empty
+        )
         t_search_start = time.perf_counter()
         t_search_end = t_search_start
         t_ctx_start = t_search_start
@@ -818,64 +889,114 @@ async def ask_stream(
                     )
                     contexts = []
                     sources = []
-
-            # Merge uploaded PDF contexts (if provided)
-            if requested_doc_ids:
-                owner_scope = user_uuid or "anonymous"
-                pdf_docs = get_docs_for_user(requested_doc_ids, owner_scope)
-                if pdf_docs:
-                    async for x in emit("status", {"stage": "PDF", "message": "Extracting uploaded PDF(s)..."}):
-                        yield x
-                    for d in pdf_docs:
-                        await ensure_pdf_processed(d)
-                        if session_id and auth_token:
-                            asyncio.create_task(
-                                upsert_attachment_to_backend(
-                                    chat_backend_url=CHAT_BACKEND_URL,
-                                    verify_ssl=S.VERIFY_SSL,
-                                    auth_token=auth_token,
-                                    session_uuid=session_id,
-                                    doc=d,
-                                )
-                            )
-                    remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
-                    pdf_contexts, pdf_sources = build_pdf_contexts(
-                        pdf_docs, question=retrieval_q, max_total_chars=remaining
-                    )
-                    contexts.extend(pdf_contexts)
-                    for s in pdf_sources:
-                        sources.append(type("PdfSrc", (), {
-                            "sid": None,
-                            "id": s.get("id"),
-                            "title": s.get("title"),
-                            "display_url": None,
-                            "url": None,
-                            "license": None,
-                        })())
-            elif session_id and auth_token and _mentions_file_or_document(user_q):
-                records = await fetch_session_attachments_from_backend(
-                    chat_backend_url=CHAT_BACKEND_URL,
-                    verify_ssl=S.VERIFY_SSL,
-                    auth_token=auth_token,
-                    session_uuid=session_id,
-                )
-                if records:
-                    persisted_docs = docs_from_attachment_records(records, owner_id=(user_uuid or "persisted"))
-                    remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
-                    pdf_contexts, pdf_sources = build_pdf_contexts(
-                        persisted_docs, question=retrieval_q, max_total_chars=remaining
-                    )
-                    contexts.extend(pdf_contexts)
-                    for s in pdf_sources:
-                        sources.append(type("PdfSrc", (), {
-                            "sid": None,
-                            "id": s.get("id"),
-                            "title": s.get("title"),
-                            "display_url": None,
-                            "url": None,
-                            "license": None,
-                        })())
+            retrieval_context_count = len(contexts)
             t_ctx_end = time.perf_counter()
+
+        persisted_attachment_records = []
+        if session_id and auth_token and (requested_doc_ids or _mentions_file_or_document(user_q)):
+            persisted_attachment_records = await fetch_session_attachments_from_backend(
+                chat_backend_url=CHAT_BACKEND_URL,
+                verify_ssl=S.VERIFY_SSL,
+                auth_token=auth_token,
+                session_uuid=session_id,
+            )
+
+        if local_pdf_docs or local_image_docs or persisted_attachment_records:
+            async for x in emit("status", {"stage": "Attachments", "message": "Preparing uploaded attachments..."}):
+                yield x
+
+            local_pdfs = list(local_pdf_docs)
+            local_images = list(local_image_docs)
+
+            if local_pdfs:
+                for d in local_pdfs:
+                    await ensure_pdf_processed(d)
+                    if session_id and auth_token:
+                        asyncio.create_task(
+                            upsert_attachment_to_backend(
+                                chat_backend_url=CHAT_BACKEND_URL,
+                                verify_ssl=S.VERIFY_SSL,
+                                auth_token=auth_token,
+                                session_uuid=session_id,
+                                doc=d,
+                            )
+                        )
+
+            if local_images:
+                for d in local_images:
+                    await ensure_image_processed(d)
+                    if session_id and auth_token:
+                        asyncio.create_task(
+                            upsert_image_attachment_to_backend(
+                                chat_backend_url=CHAT_BACKEND_URL,
+                                verify_ssl=S.VERIFY_SSL,
+                                auth_token=auth_token,
+                                session_uuid=session_id,
+                                doc=d,
+                            )
+                        )
+
+            persisted_pdfs = docs_from_attachment_records(
+                persisted_attachment_records,
+                owner_id=(user_uuid or "persisted"),
+            ) if persisted_attachment_records else []
+            persisted_images = images_from_attachment_records(
+                persisted_attachment_records,
+                owner_id=(user_uuid or "persisted"),
+            ) if persisted_attachment_records else []
+
+            seen_attachment_ids = {d.doc_id for d in local_pdfs + local_images}
+            merged_pdfs = local_pdfs + [d for d in persisted_pdfs if d.doc_id not in seen_attachment_ids]
+            merged_images = local_images + [d for d in persisted_images if d.doc_id not in seen_attachment_ids]
+
+            remaining = max(2000, S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts))
+            if merged_pdfs:
+                pdf_contexts, pdf_sources = build_pdf_contexts(
+                    merged_pdfs,
+                    question=retrieval_q,
+                    max_total_chars=remaining,
+                )
+                attachment_contexts.extend(pdf_contexts)
+                remaining = max(1000, remaining - sum(len(c) for c in pdf_contexts))
+                for s in pdf_sources:
+                    attachment_sources.append(type("PdfSrc", (), {
+                        "sid": None,
+                        "id": s.get("id"),
+                        "title": s.get("title"),
+                        "display_url": None,
+                        "url": None,
+                        "license": None,
+                    })())
+
+            if merged_images:
+                image_contexts, image_sources_raw, image_stats = build_image_contexts(
+                    merged_images,
+                    max_total_chars=remaining,
+                )
+                attachment_contexts.extend(image_contexts)
+                for s in image_sources_raw:
+                    attachment_sources.append(type("ImageSrc", (), {
+                        "sid": None,
+                        "id": s.get("id"),
+                        "title": s.get("title"),
+                        "display_url": None,
+                        "url": None,
+                        "license": None,
+                    })())
+
+            contexts.extend(attachment_contexts)
+            sources.extend(attachment_sources)
+
+            # Non-agri images used to force a hard off_topic refusal. That
+            # silently dropped the vision summary and produced the generic
+            # "I can't view or analyze images" reply, which is confusing
+            # because FA *did* look at the image. Instead we let the LLM see
+            # the (now-tagged) image context and rely on the prompt directive
+            # to describe what was observed and steer back to agriculture.
+            if attachment_handoff and contexts and turn_strategy in {"off_topic", "conversation_only", "general_knowledge"}:
+                turn_strategy = "normal"
+
+        t_ctx_end = time.perf_counter()
 
         all_sources = [
             {
@@ -890,7 +1011,15 @@ async def ask_stream(
             }
             for i, s in enumerate(sources)
         ]
-        grounding_state = "general_fallback" if (turn_strategy == "normal" and not contexts) else "euf_supported"
+        if turn_strategy == "normal":
+            if retrieval_context_count > 0:
+                grounding_state = "euf_supported"
+            elif attachment_contexts:
+                grounding_state = "attachment_supported"
+            else:
+                grounding_state = "general_fallback"
+        else:
+            grounding_state = "euf_supported"
         if turn_strategy in {"clarification_only", "off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge"}:
             grounding_state = turn_strategy
 
@@ -1242,9 +1371,25 @@ async def follow_ups(inp: FollowUpsIn) -> FollowUpsOut:
     if inp.language:
         language_hint = f"\nUser's language: {inp.language}\n"
 
+    history_block = ""
+    if inp.history:
+        # Keep only the trailing turns so the prompt anchors on the actual topic
+        # the user has been exploring, not on an unrelated tail of the reply.
+        recent = inp.history[-4:]
+        lines: list[str] = []
+        for msg in recent:
+            role = (msg.get("role") or "").strip().lower()
+            content = (msg.get("content") or "").strip()
+            if not content or role not in {"user", "assistant"}:
+                continue
+            lines.append(f"{role.capitalize()}: {content[:600]}")
+        if lines:
+            history_block = "Earlier conversation (for topic anchoring only):\n" + "\n".join(lines) + "\n\n"
+
     prompt = (
         f"{_FOLLOW_UPS_SYSTEM_PROMPT}"
         f"{language_hint}\n"
+        f"{history_block}"
         f"User question:\n{user_msg[:1500]}\n\n"
         f"Assistant reply:\n{assistant_msg[:3000]}\n\n"
         "Return JSON now."

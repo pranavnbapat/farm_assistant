@@ -45,13 +45,22 @@ def build_context_and_sources(
     contexts: List[str] = []
     sources: List[SourceItem] = []
     total_chars = 0
+    # Track parent_id -> index in `contexts`/`sources` so multiple chunks
+    # returned for the same parent document collapse into one citation/source
+    # while still contributing their content as additional grounding text.
+    # `_attach_sources` numbers contexts by position, and the frontend
+    # renders sources by the same positional index, so contexts and sources
+    # must stay in lockstep length-wise.
+    parent_to_idx: Dict[str, int] = {}
+    # Cap merged context length per parent so a hot parent can't starve
+    # other sources of the global char budget.
+    PER_PARENT_CHAR_CAP = 3500
 
     def norm(v):
         if isinstance(v, list): return " ".join(map(str, v))
         return "" if v is None else str(v)
 
     for i, it in enumerate(items):
-        sid = f"S{i + 1}"
         if top_k > 0 and len(contexts) >= top_k:
             break
 
@@ -83,23 +92,40 @@ def build_context_and_sources(
             else:
                 proj_str = cap
 
-        sources.append(SourceItem(
-            id=_id, url=url, display_url=nice_url,
-            # Use title if available, otherwise fall back to project name or subtitle
-            title=(title or proj_str or subtitle or None),
-            score=_score,
-            subtitle=subtitle or None,
-            description=(desc[:300] if desc else None),
-            project=(proj_str or None),
-            license=(license_ or None),
-            keywords=(keywords or None) if keywords else None,
-            topics=(topics or None) if topics else None,
-            themes=(themes or None) if themes else None,
-            languages=(langs or None) if langs else None,
-            creators=(creators or None) if creators else None,
-            date_of_completion=(datec or None),
-            sid=sid,
-        ))
+        # Identify the parent document. `/llm_retrieve` returns multiple
+        # chunks per parent (max_chunks_per_parent=2 in
+        # Opensearch_FastAPI_Test/services/search_endpoint_helpers.py),
+        # so we collapse them here.
+        parent_key = (
+            (src.get("parent_id") or "").strip()
+            or (src.get("_orig_id") or "").strip()
+            or (url or "").strip()
+            or (title or "").strip().lower()
+            or f"__row_{i}"
+        )
+        existing_idx = parent_to_idx.get(parent_key)
+
+        if existing_idx is None:
+            sid = f"S{len(sources) + 1}"
+            sources.append(SourceItem(
+                id=_id, url=url, display_url=nice_url,
+                # Use title if available, otherwise fall back to project name or subtitle
+                title=(title or proj_str or subtitle or None),
+                score=_score,
+                subtitle=subtitle or None,
+                description=(desc[:300] if desc else None),
+                project=(proj_str or None),
+                license=(license_ or None),
+                keywords=(keywords or None) if keywords else None,
+                topics=(topics or None) if topics else None,
+                themes=(themes or None) if themes else None,
+                languages=(langs or None) if langs else None,
+                creators=(creators or None) if creators else None,
+                date_of_completion=(datec or None),
+                sid=sid,
+            ))
+        else:
+            sid = sources[existing_idx].sid or f"S{existing_idx + 1}"
 
         header_parts = [f"[{sid}]"]
         if title: header_parts.append(f"Title: {title}")
@@ -149,12 +175,40 @@ def build_context_and_sources(
 
         if chunk:
             chunk = chunk[:2000]
-            if total_chars + len(chunk) > max_context_chars:
-                break
-            contexts.append(chunk)
-            total_chars += len(chunk)
+            if existing_idx is None:
+                if total_chars + len(chunk) > max_context_chars:
+                    # Roll back the source we just added so contexts/sources stay aligned.
+                    sources.pop()
+                    break
+                contexts.append(chunk)
+                parent_to_idx[parent_key] = len(contexts) - 1
+                total_chars += len(chunk)
+            else:
+                # Merge into the parent's existing context, respecting per-parent
+                # and global char budgets so one parent can't dominate.
+                merged = contexts[existing_idx]
+                room_parent = max(0, PER_PARENT_CHAR_CAP - len(merged))
+                room_global = max(0, max_context_chars - total_chars)
+                room = min(room_parent, room_global)
+                if room <= 0:
+                    continue
+                addition = chunk[:room]
+                separator = "\n\n" if not merged.endswith("\n") else ""
+                # Reserve a couple of chars for the separator within the room budget.
+                if len(separator) + len(addition) > room:
+                    addition = addition[: max(0, room - len(separator))]
+                if not addition:
+                    continue
+                contexts[existing_idx] = f"{merged}{separator}{addition}"
+                total_chars += len(separator) + len(addition)
+        elif existing_idx is None:
+            # No content for this brand-new source — roll back to keep arrays aligned.
+            sources.pop()
 
-    logger.info(f"Extracted {len(contexts)} context chunk(s); total_chars={total_chars}")
+    logger.info(
+        f"Extracted {len(contexts)} context chunk(s) over {len(sources)} unique source(s); "
+        f"total_chars={total_chars}"
+    )
     return contexts, sources
 
 def _tokenise_alpha(text: str) -> list[str]:

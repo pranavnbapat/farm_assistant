@@ -78,6 +78,10 @@ class FollowUpsIn(BaseModel):
     user_message: str = Field(min_length=1, max_length=4000)
     assistant_message: str = Field(min_length=1, max_length=8000)
     language: Optional[str] = Field(default=None, examples=["en-GB", "fr-FR"])
+    # Optional prior turns so the model can resolve vague follow-ups
+    # (e.g. "and what else?") against the actual conversation topic
+    # rather than just the immediately-preceding assistant reply.
+    history: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class FollowUpsOut(BaseModel):

@@ -1,5 +1,6 @@
 # app/clients/vllm_client.py
 
+import base64
 import httpx
 import json
 import logging
@@ -15,14 +16,15 @@ logger.info(f"vLLM client initialized with URL: {S.VLLM_URL}, Model: {S.VLLM_MOD
 _transport = httpx.AsyncHTTPTransport(http2=False, retries=0)
 
 
-def _build_headers() -> Dict[str, str]:
+def _build_headers(api_key: str | None = None) -> Dict[str, str]:
     """Build headers with API key if available."""
     headers = {
         "Content-Type": "application/json",
         "Connection": "keep-alive",
     }
-    if S.VLLM_API_KEY:
-        headers["Authorization"] = f"Bearer {S.VLLM_API_KEY}"
+    resolved_api_key = api_key if api_key is not None else S.VLLM_API_KEY
+    if resolved_api_key:
+        headers["Authorization"] = f"Bearer {resolved_api_key}"
     return headers
 
 
@@ -101,6 +103,64 @@ async def generate_once(
         data = r.json()
 
         # Extract content from OpenAI response format
+        if "choices" in data and len(data["choices"]) > 0:
+            message = data["choices"][0].get("message", {})
+            return message.get("content", "").strip()
+        return ""
+
+
+async def generate_vision_once(
+    *,
+    prompt: str,
+    image_bytes: bytes,
+    mime_type: str,
+    temperature: float = 0.1,
+    max_tokens: int = 500,
+    model: str | None = None,
+) -> str:
+    """
+    One-shot vision generation against the configured vision-capable OpenAI-style
+    chat endpoint.
+    """
+    base_url = (S.RUNPOD_VLLM_VISION_HOST or S.VLLM_URL).rstrip("/")
+    resolved_model = model or S.VLLM_VISION_MODEL or S.VLLM_MODEL
+    if not base_url or not resolved_model:
+        raise RuntimeError("Vision model endpoint is not configured.")
+
+    data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": "You are a careful agricultural vision assistant."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        },
+    ]
+
+    timeout = httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=None)
+    url = f"{base_url}/v1/chat/completions"
+
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        verify=S.VERIFY_SSL,
+        transport=_transport,
+        headers=_build_headers(S.VLLM_VISION_API_KEY),
+        trust_env=False,
+    ) as client:
+        r = await client.post(
+            url,
+            json=build_gen_payload(
+                prompt="",
+                temperature=temperature,
+                max_tokens=max_tokens,
+                model=resolved_model,
+                messages=messages,
+            ),
+        )
+        r.raise_for_status()
+        data = r.json()
         if "choices" in data and len(data["choices"]) > 0:
             message = data["choices"][0].get("message", {})
             return message.get("content", "").strip()

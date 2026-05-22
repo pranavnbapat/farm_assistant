@@ -401,6 +401,32 @@ async def proxy_message_feedback(session_id: str, message_id: str, request: Requ
     return await _proxy_json_request("POST", url, headers=_chat_backend_headers(request), json_body=await request.json())
 
 
+@app.get("/chatbot/api/experiments/turns", tags=["Chats"], summary="List experiment turns for evaluation analysis")
+async def api_get_experiment_turns(
+    request: Request,
+    experiment_id: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    session_uuid: Optional[str] = None,
+    limit: int = 100,
+):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/turns/"
+    params: dict[str, Any] = {"limit": limit}
+    if experiment_id:
+        params["experiment_id"] = experiment_id
+    if variant_id:
+        params["variant_id"] = variant_id
+    if session_uuid:
+        params["session_uuid"] = session_uuid
+    return await _proxy_json_request(
+        "GET",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        params=params,
+    )
+
+
 @app.get("/chatbot/api/users/me/profile", tags=["User Profile"], summary="Read the current user's profile")
 async def api_get_user_profile(request: Request):
     if not S.CHAT_BACKEND_URL:
@@ -527,3 +553,58 @@ async def proxy_logout(request: Request):
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/fastapi/logout/"
     return await _proxy_json_request("POST", url, json_body=await request.json())
+
+
+@app.post("/chatbot/api/experiments/comparisons/run", tags=["Chats"], summary="Persist a head-to-head comparison run")
+async def api_create_comparison_run(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/comparisons/run/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers=_chat_backend_headers(request),
+        json_body=await request.json(),
+    )
+
+
+@app.post("/chatbot/api/experiments/comparisons/result", tags=["Chats"], summary="Persist evaluator selections for a comparison run")
+async def api_store_comparison_result(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/comparisons/result/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers=_chat_backend_headers(request),
+        json_body=await request.json(),
+    )
+
+
+@app.get("/chatbot/api/experiments/comparisons", tags=["Chats"], summary="List stored head-to-head comparison runs")
+async def api_get_comparison_runs(
+    request: Request,
+    experiment_id: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    compare_session_id: Optional[str] = None,
+    session_uuid: Optional[str] = None,
+    limit: int = 100,
+):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/comparisons/"
+    params: dict[str, Any] = {"limit": limit}
+    if experiment_id:
+        params["experiment_id"] = experiment_id
+    if variant_id:
+        params["variant_id"] = variant_id
+    if compare_session_id:
+        params["compare_session_id"] = compare_session_id
+    if session_uuid:
+        params["session_uuid"] = session_uuid
+    return await _proxy_json_request(
+        "GET",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        params=params,
+    )

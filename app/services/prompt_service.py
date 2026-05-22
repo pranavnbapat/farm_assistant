@@ -41,6 +41,14 @@ _BREVITY_RULE = (
     "the actual question first and stop; the user can ask follow-ups."
 )
 
+_FORMATTING_RULE = (
+    "For ASCII art, diagrams, command output, configuration snippets, or any block whose "
+    "line breaks and spacing must be preserved, wrap the entire block in a single fenced code "
+    "block using triple backticks (```). Do not wrap individual lines in single backticks and "
+    "do not split a single visual into multiple short code fences — emit one fence with the "
+    "full multi-line content inside."
+)
+
 
 def _normalize_history_messages(history_messages: Optional[list[dict]]) -> list[dict]:
     """
@@ -104,7 +112,7 @@ def _attach_sources(question: str, contexts: list[str]) -> str:
     labelled = [f"[{i + 1}] {ctx}" for i, ctx in enumerate(contexts)]
     sources_block = "\n\n".join(labelled)
     return (
-        "Relevant EU-FarmBook sources for this question:\n\n"
+        "Relevant context for this question:\n\n"
         f"{sources_block}\n\n"
         f"Question: {question}"
     )
@@ -134,7 +142,7 @@ def build_messages(
     ]
     if has_relevant_sources:
         directives.append(
-            "When sources are present in the user's turn, treat them as the primary grounding material for your answer."
+            "When context is present in the user's turn, treat it as the primary grounding material for your answer."
         )
     else:
         directives.append(
@@ -146,7 +154,17 @@ def build_messages(
         "If uploaded PDF content appears in the sources block, treat it as available context "
         "and answer from it; do not say you cannot access files."
     )
+    directives.append(
+        "If uploaded image analysis appears in the sources block, treat it as available context "
+        "about the image and answer from it; do not say you cannot view or analyze uploaded images. "
+        "If the image block is marked \"Agriculture-related: no\", briefly describe what was observed "
+        "in 1-2 sentences, then explain that you focus on agriculture, farming, agri-tech, and food "
+        "systems, and invite an agriculture-related question. "
+        "If the image block contains \"Visual analysis failed\", apologize that the image could not "
+        "be analyzed this time and ask the user to retry or describe what they wanted to know."
+    )
     directives.append(_BREVITY_RULE)
+    directives.append(_FORMATTING_RULE)
     directives.append(_FOLLOWUP_RULE)
 
     system_text = "\n\n".join(directives)
@@ -302,6 +320,7 @@ def build_general_knowledge_messages(
             "you are unsure about, say so plainly rather than guessing."
         ),
         _BREVITY_RULE,
+        _FORMATTING_RULE,
         _FOLLOWUP_RULE,
     ]
     system_text = "\n\n".join(directives)
@@ -322,7 +341,7 @@ def build_capabilities_messages(
         ),
         (
             "You can help with agriculture and EU-FarmBook-related questions, explain concepts, "
-            "summarize or discuss uploaded PDF content when available, recap the conversation, "
+            "summarize or discuss uploaded PDF content and uploaded images when available, recap the conversation, "
             "compare options, and guide the user step by step on a farming or project-related topic. "
             "Do not claim external actions you cannot perform; if a capability depends on the user "
             "providing more information or a document, say that clearly."

@@ -237,6 +237,9 @@ def build_pdf_contexts(
 def docs_from_attachment_records(records: List[dict], owner_id: str = "persisted") -> List[PdfDocument]:
     out: List[PdfDocument] = []
     for r in records or []:
+        attachment_type = str(r.get("attachment_type") or "").lower()
+        if attachment_type not in {"pdf", ""}:
+            continue
         doc_id = str(r.get("attachment_uuid") or r.get("id") or uuid.uuid4())
         out.append(PdfDocument(
             doc_id=doc_id,
