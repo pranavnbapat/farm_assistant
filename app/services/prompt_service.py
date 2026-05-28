@@ -20,8 +20,9 @@ _SCOPE_RULE = (
 )
 
 _LANGUAGE_RULE = (
-    "Respond in the same language as the user's latest message, "
-    "unless the user explicitly asks for another language."
+    "Reply in the same language as the user's question (the line after \"Question:\" "
+    "on the user's turn), not the language of the retrieved sources or any quoted "
+    "material. Switch languages only if the user explicitly asks for another language."
 )
 
 _FOLLOWUP_RULE = (
@@ -48,6 +49,24 @@ _FORMATTING_RULE = (
     "do not split a single visual into multiple short code fences — emit one fence with the "
     "full multi-line content inside."
 )
+
+
+def _language_rule(answer_language: Optional[str] = None) -> str:
+    """
+    Build the language directive for an answer turn. When the question's language
+    has been detected, name it explicitly and tell the model to disregard the
+    (often non-English) retrieved sources. A bare "match the user's language" rule
+    loses to a large foreign-language context block packed into the user turn,
+    which is what made English questions come back in the source's language.
+    """
+    if answer_language:
+        return (
+            f"Write your entire answer in {answer_language} — the language of the user's question. "
+            "The retrieved sources may be in other languages; read and use them, but always respond "
+            f"in {answer_language}, translating any wording you quote. "
+            "Switch languages only if the user explicitly asks for another language."
+        )
+    return _LANGUAGE_RULE
 
 
 def _normalize_history_messages(history_messages: Optional[list[dict]]) -> list[dict]:
@@ -124,12 +143,13 @@ def build_messages(
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
     has_relevant_sources: bool = True,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """Standard retrieval-grounded turn."""
     directives = [
         _IDENTITY,
         _SCOPE_RULE,
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
         f"Answer the user's actual question directly before adding extra detail. {_HISTORY_USE_RULE}",
         (
             "Cite sources inline as [1], [2] etc., matching the numbers in the sources block on the user's turn. "
@@ -298,6 +318,7 @@ def build_general_knowledge_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """
     Agricultural question that is answerable from common agricultural knowledge.
@@ -307,7 +328,7 @@ def build_general_knowledge_messages(
     directives = [
         _IDENTITY,
         _SCOPE_RULE,
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
         f"Answer the user's actual question directly before adding extra detail. {_HISTORY_USE_RULE}",
         (
             "This question can be answered from general agricultural knowledge — no specific "

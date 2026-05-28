@@ -26,7 +26,7 @@ This document summarizes what user information is captured in this codebase and 
 
 ### How It Is Used
 
-- Sent to FastAPI `POST /api/login`.
+- Sent to FastAPI `POST /api/login` and the documented alias `POST /chatbot/api/auth/login`.
 - Forwarded to upstream auth backend (`/fastapi/login/` on Django backend).
 - Response is expected to include tokens and user UUID.
 
@@ -84,7 +84,8 @@ This document summarizes what user information is captured in this codebase and 
 - Frontend chat flow:
   - `static/js/chat.js`
 - SSE request:
-  - `/ask/stream` query params include `q`, `session_id`, `doc_ids`, `followup_hint`, `auth_token`.
+  - `/ask/stream` query params include `q`, `session_id`, `doc_ids`, `followup_hint`, and related chat controls.
+  - The JWT is sent in the standard `Authorization` header for the SSE request.
 - Turn logging:
   - `POST /proxy/chat/log-turn/` with:
     - `session_uuid`
@@ -138,15 +139,16 @@ This document summarizes what user information is captured in this codebase and 
 
 - Active import path in ask router:
   - `from app.services.user_profile_service import UserProfileService`
-- Note:
-  - `user_profile_service_v2.py` exists and aliases `UserProfileService = UserProfileServiceV2`,
-    but `ask.py` currently imports from `user_profile_service.py`.
+- Current implementation:
+  - `app/services/user_profile_service.py`
 
 ### How It Is Used
 
 - Read profile and facts from backend:
   - `/chat/user/profile/`
   - `/chat/user/facts/`
+- Read and write memory notes from backend:
+  - `/chat/user/memory/`
 - Build a profile context snippet and inject into prompt.
 - After each turn, parse user message and update profile/facts (fire-and-forget).
 
@@ -181,7 +183,31 @@ This document summarizes what user information is captured in this codebase and 
   - extraction metadata.
 - Existing session attachments can be re-fetched and reused as context.
 
-## 7) Voice Data (Browser Speech Recognition/TTS)
+## 7) Uploaded Image Data
+
+### Data Captured
+
+- Raw uploaded image bytes
+- Filename
+- MIME type
+- Owner identifier (`user_uuid` from token; fallback `anonymous`)
+- Generated `doc_id`
+- LLM-generated summary/description
+- Processing status/error
+
+### Where Captured/Stored
+
+- Upload endpoint:
+  - `POST /files/image`
+- Temporary/in-memory handling:
+  - image stub and in-memory document store in `app/services/image_service.py`
+
+### How It Is Used
+
+- Image analysis output is converted into prompt context for answers.
+- When session + auth are available, image attachment metadata can be upserted to the backend and re-fetched later for session reuse.
+
+## 8) Voice Data (Browser Speech Recognition/TTS)
 
 ### Data Captured
 
@@ -197,7 +223,7 @@ This document summarizes what user information is captured in this codebase and 
 - It is only sent to backend when user submits chat.
 - TTS plays assistant text locally in browser; no server TTS payload in this path.
 
-## 8) Data Sent To External/Internal Services
+## 9) Data Sent To External/Internal Services
 
 ### Django Backend (proxied)
 
@@ -205,6 +231,7 @@ This document summarizes what user information is captured in this codebase and 
 - Session management requests (`/chat/sessions/*`).
 - Turn logs (`/chat/log-turn/`) with message content and metadata.
 - Profile/facts requests (`/chat/user/profile/`, `/chat/user/facts/`).
+- Memory note requests (`/chat/user/memory/`).
 - Attachment upsert/fetch (`/chat/attachments/*`).
 
 ### OpenSearch API
@@ -219,10 +246,11 @@ This document summarizes what user information is captured in this codebase and 
   - previous conversation snippet,
   - user profile context (if present).
 
-## 9) Notable Privacy/Security Observations From Code
+## 10) Notable Privacy/Security Observations From Code
 
 - Tokens are stored in `localStorage` (XSS-sensitive storage location).
-- SSE auth token is passed via URL query parameter (`auth_token`) for `/ask/stream`.
+- SSE requests use the standard `Authorization` header rather than a query-param token.
 - Login email is written to application logs.
 - PDF extracted text is retained in memory and may be persisted to backend attachments.
+- Image-derived summaries and attachment metadata may also be persisted to backend attachments.
 - This repo does not show explicit consent capture, data deletion workflows for chat/profile, or retention limits on backend-stored chat/profile data.

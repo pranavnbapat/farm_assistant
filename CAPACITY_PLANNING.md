@@ -8,11 +8,13 @@ This document captures the current token-budget and concurrency picture for the 
 
 It is intended as an operational planning note, not a theoretical model card.
 
+This note is environment-specific. It reflects one inspected local `.env` and one private vLLM deployment configuration at the time it was written, so it should be revalidated whenever those settings change.
+
 ## Inputs Used
 
 ### FastAPI App Settings
 
-From [`.env`](/home/pranav/PyCharm/EU-FarmBook/farm_assistant/.env):
+From one inspected [`.env`](/home/pranav/PyCharm/EU-FarmBook/farm_assistant/.env):
 
 - `MAX_ACTIVE_GENERATIONS=3`
 - `NUM_CTX=16384`
@@ -29,7 +31,7 @@ From code:
 
 ### vLLM Server Settings
 
-From the private runtime configuration used for the vLLM text server:
+From one private runtime configuration used for the vLLM text server:
 
 - model class: `Qwen3 30B`
 - GPU: `A40 48 GB`

@@ -193,14 +193,30 @@ The documented public surface includes:
 - `GET /chatbot/api/chats/{session_id}`
 - `PATCH /chatbot/api/chats/{session_id}`
 - `DELETE /chatbot/api/chats/{session_id}`
+- `POST /chatbot/api/chats/message`
+- `POST /chatbot/api/chats/{session_id}/message`
+- `GET /chatbot/api/chats/message/stream`
+- `GET /chatbot/api/chats/{session_id}/message/stream`
+- `POST /chatbot/api/chats/log-turn`
+- `POST /chatbot/api/chats/{session_id}/log-turn`
 - `POST /chatbot/api/chats/{session_id}/message/{message_id}/feedback`
+- `POST /chatbot/api/follow-ups`
+- `GET /chatbot/api/experiments/turns`
+- `POST /chatbot/api/experiments/comparisons/run`
+- `POST /chatbot/api/experiments/comparisons/result`
+- `GET /chatbot/api/experiments/comparisons`
 - `GET /chatbot/api/users/me/profile`
 - `PATCH /chatbot/api/users/me/profile`
 - `GET /chatbot/api/users/me/facts`
 - `POST /chatbot/api/users/me/facts`
+- `GET /chatbot/api/users/me/memory`
+- `POST /chatbot/api/users/me/memory`
+- `DELETE /chatbot/api/users/me/memory/{note_id}`
 - `POST /chatbot/api/users/me/profile/build`
 - `POST /chatbot/api/files/pdf`
 - `DELETE /chatbot/api/files/pdf/{doc_id}`
+- `POST /chatbot/api/files/image`
+- `DELETE /chatbot/api/files/image/{doc_id}`
 
 The browser UI routes `/`, `/chat`, and `/c/{session_id}` are intentionally hidden from OpenAPI.
 
@@ -224,11 +240,11 @@ See [API_ENDPOINT_SURFACE.md](./API_ENDPOINT_SURFACE.md) for the endpoint invent
 │   └── services/
 │       ├── chat_history.py
 │       ├── context_service.py
+│       ├── image_service.py
 │       ├── pdf_service.py
 │       ├── prompt_service.py
 │       ├── search_service.py
-│       ├── user_profile_service.py
-│       └── user_profile_service_v2.py
+│       └── user_profile_service.py
 ├── static/
 │   ├── css/custom.css
 │   └── js/
@@ -270,6 +286,8 @@ Voice input and playback are browser-driven:
 There is no active server-side TTS router in the current code.
 
 ## Development Notes
+
+`README.md` lists code defaults from `app/config.py`. Local sample values in `.env.sample` can be more permissive, for example `ENABLE_DOCS=true` for local development.
 
 ### Changing the Model
 

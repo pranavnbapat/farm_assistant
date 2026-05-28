@@ -111,6 +111,17 @@ This document lists the additive API endpoints exposed for the current Farm Assi
     - `confidence_score`
     - `source_session_uuid`
 
+- `GET /chatbot/api/users/me/memory`
+  - Fetch the current user's memory notes.
+  - Query params:
+    - `limit`
+
+- `POST /chatbot/api/users/me/memory`
+  - Add a free-form memory note for the current user.
+
+- `DELETE /chatbot/api/users/me/memory/{note_id}`
+  - Delete a memory note by id.
+
 ## Files
 
 - `POST /chatbot/api/files/pdf`
@@ -118,6 +129,31 @@ This document lists the additive API endpoints exposed for the current Farm Assi
 
 - `DELETE /chatbot/api/files/pdf/{doc_id}`
   - Delete an uploaded PDF.
+
+- `POST /chatbot/api/files/image`
+  - Upload a JPG, JPEG, or PNG image for chat context.
+
+- `DELETE /chatbot/api/files/image/{doc_id}`
+  - Delete an uploaded image.
+
+## Experiments
+
+- `GET /chatbot/api/experiments/turns`
+  - List experiment turns for evaluation analysis.
+
+- `POST /chatbot/api/experiments/comparisons/run`
+  - Persist a head-to-head comparison run.
+
+- `POST /chatbot/api/experiments/comparisons/result`
+  - Persist evaluator selections for a comparison run.
+
+- `GET /chatbot/api/experiments/comparisons`
+  - List stored head-to-head comparison runs.
+
+## Utilities
+
+- `POST /chatbot/api/follow-ups`
+  - Suggest follow-up questions for the last turn.
 
 ## Notes
 

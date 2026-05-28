@@ -57,6 +57,7 @@ from app.services.prompt_service import (
     build_title_prompt,
 )
 from app.services.search_service import build_search_payload, collect_os_items
+from app.utils.language_utils import detect_language_confident, get_language_name
 from app.services.user_profile_service import UserProfileService
 from app.schemas import AskIn, ChatMessageStreamIn, FollowUpsIn, FollowUpsOut, SummariseIn, SummariseOut
 
@@ -1029,6 +1030,16 @@ async def ask_stream(
             _max_tokens = S.MAX_OUTPUT_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
+        # Answer in the language of the user's question, not the (often non-English)
+        # retrieved sources. Only force a language when the detector has positive
+        # evidence (a marker match); when it finds nothing it returns None, and we
+        # fall back to the reworded question-anchored rule rather than risk forcing
+        # the wrong language onto an undetected question.
+        _q_lang_code = detect_language_confident(user_q)
+        answer_language = get_language_name(_q_lang_code) if _q_lang_code else None
+        if answer_language == "Unknown":
+            answer_language = None
+
         history_messages_for_prompt = state.get("messages", [])
         if turn_strategy == "clarification_only":
             messages = build_clarification_messages(
@@ -1065,6 +1076,7 @@ async def ask_stream(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
+                answer_language=answer_language,
             )
         else:
             messages = build_messages(
@@ -1073,6 +1085,7 @@ async def ask_stream(
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
                 has_relevant_sources=bool(contexts),
+                answer_language=answer_language,
             )
         prompt_tokens = sum(_estimate_tokens(m.get("content", "")) for m in messages)
         prompt_cap = min(

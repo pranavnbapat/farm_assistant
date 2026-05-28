@@ -103,6 +103,31 @@ def detect_language(text: str) -> str:
     return "en"
 
 
+def detect_language_confident(text: str) -> Optional[str]:
+    """
+    Like detect_language, but returns None when no marker word matches — i.e. when
+    detect_language would only be defaulting to "en" with no real evidence. Lets
+    callers tell "confidently this language" apart from "no signal, fell back to
+    English", so they don't force the wrong language on an undetected question.
+    """
+    if not text or not text.strip():
+        return None
+
+    words = set(re.findall(r'\b[a-zA-Zà-ÿÀ-Ÿ]+\b', text.lower()))
+    if not words:
+        return None
+
+    scores = {}
+    for lang_code, markers in LANGUAGE_MARKERS.items():
+        overlap = words & markers
+        if overlap:
+            scores[lang_code] = len(overlap)
+
+    if scores:
+        return max(scores, key=scores.get)
+    return None
+
+
 def get_language_name(lang_code: str) -> str:
     """Get the English name for a language code."""
     return LANGUAGE_NAMES.get(lang_code.lower(), "Unknown")

@@ -202,6 +202,16 @@ Current documented groups:
 - User Profile
 - Files
 
+Notable currently documented endpoints include:
+
+- chat session CRUD
+- direct message and streaming aliases
+- turn logging and message feedback
+- follow-up suggestion generation
+- memory note CRUD
+- experiment/comparison endpoints
+- PDF and image attachment endpoints
+
 The UI page routes `/`, `/chat`, and `/c/{session_id}` are intentionally hidden from OpenAPI.
 
 See [API_ENDPOINT_SURFACE.md](./API_ENDPOINT_SURFACE.md) for the endpoint inventory.
@@ -213,6 +223,7 @@ See [API_ENDPOINT_SURFACE.md](./API_ENDPOINT_SURFACE.md) for the endpoint invent
 FastAPI is largely stateless across requests. It holds:
 
 - in-memory PDF document data for uploaded files
+- in-memory image document data for uploaded files
 - concurrency primitives
 - transient request state during streaming
 
@@ -236,17 +247,17 @@ Key settings groups:
 
 - environment selection: `FA_ENV`
 - app/docs flags: `LOG_LEVEL`, `APP_TITLE`, `APP_VERSION`, `ENABLE_DOCS`, `ENABLE_REDOC`
-- backend routing: `CHAT_BACKEND_URL`
+- backend routing: `CHAT_BACKEND_URL`, `AUTH_BACKEND_URL`
 - OpenSearch config
-- vLLM config
+- vLLM config, including optional vision-host settings
 - generation limits and defaults
 
-Environment selection influences which Django backend base URL is used when an explicit `CHAT_BACKEND_URL` override is not provided.
+Environment selection influences which Django backend base URL is used when explicit backend overrides are not provided.
 
 ## Security Notes
 
 - JWTs are stored in browser `localStorage`
-- the streaming endpoint currently accepts auth via query parameter for the SSE flow
+- the streaming endpoint reads auth from the standard `Authorization` header
 - auth/session/profile operations are proxied through FastAPI to avoid frontend CORS issues
 - SSL verification for OpenSearch is configurable
 
