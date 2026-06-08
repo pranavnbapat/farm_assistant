@@ -57,7 +57,7 @@ from app.services.prompt_service import (
     build_title_prompt,
 )
 from app.services.search_service import build_search_payload, collect_os_items
-from app.utils.language_utils import detect_language_confident, get_language_name
+from app.utils.language_utils import detect_language, detect_language_confident, get_language_name
 from app.services.user_profile_service import UserProfileService
 from app.schemas import AskIn, ChatMessageStreamIn, FollowUpsIn, FollowUpsOut, SummariseIn, SummariseOut
 
@@ -74,6 +74,13 @@ TurnMode = Literal[
     "general_knowledge",
     "normal",
 ]
+
+
+def _get_answer_language(question: str) -> str:
+    """Resolve an explicit output language, defaulting uncertain text to English."""
+    language_code = detect_language_confident(question) or detect_language(question)
+    language_name = get_language_name(language_code)
+    return "English" if language_name == "Unknown" else language_name
 
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
@@ -137,7 +144,13 @@ def _extract_cited_numbers(text: str) -> set[int]:
 
 def _strip_orphan_citations(text: str, valid_source_numbers: set[int]) -> str:
     if not valid_source_numbers:
-        return _re.sub(r"\s*\[\s*[\d\s,–-]+\s*\]", "", text)
+        cleaned = _re.sub(
+            r"(?m)^[ \t]*\[\s*[\d\s,–-]+\s*\][^\n]*(?:\n|$)",
+            "",
+            text,
+        )
+        cleaned = _re.sub(r"\s*\[\s*[\d\s,–-]+\s*\]", "", cleaned)
+        return _re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
     def _replace(match):
         tokens = [
@@ -1031,45 +1044,45 @@ async def ask_stream(
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
         # Answer in the language of the user's question, not the (often non-English)
-        # retrieved sources. Only force a language when the detector has positive
-        # evidence (a marker match); when it finds nothing it returns None, and we
-        # fall back to the reworded question-anchored rule rather than risk forcing
-        # the wrong language onto an undetected question.
-        _q_lang_code = detect_language_confident(user_q)
-        answer_language = get_language_name(_q_lang_code) if _q_lang_code else None
-        if answer_language == "Unknown":
-            answer_language = None
-
+        # Always give the model an explicit answer language. Confident marker
+        # matches preserve multilingual behavior; otherwise default to English.
+        # Leaving this unset lets retrieved documents or stored context dominate.
+        answer_language = _get_answer_language(user_q)
         history_messages_for_prompt = state.get("messages", [])
         if turn_strategy == "clarification_only":
             messages = build_clarification_messages(
                 question=user_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=None,
+                answer_language=answer_language,
             )
         elif turn_strategy == "off_topic":
             messages = build_off_topic_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
+                answer_language=answer_language,
             )
         elif turn_strategy == "history_only":
             messages = build_history_only_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
+                answer_language=answer_language,
             )
         elif turn_strategy == "conversation_only":
             messages = build_conversation_only_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
+                answer_language=answer_language,
             )
         elif turn_strategy == "assistant_capabilities":
             messages = build_capabilities_messages(
                 question=prompt_q,
                 history_messages=history_messages_for_prompt,
                 user_profile_context=profile_context,
+                answer_language=answer_language,
             )
         elif turn_strategy == "general_knowledge":
             messages = build_general_knowledge_messages(
@@ -1201,6 +1214,11 @@ async def ask_stream(
         norm_text = _strip_orphan_citations(norm_text, valid_source_numbers)
         cited_nums = _extract_cited_numbers(norm_text)
 
+        # Token streaming is optimistic. Send the citation-sanitized final text so
+        # clients can replace any orphan references the model emitted mid-stream.
+        async for x in emit("final", {"text": full_text}):
+            yield x
+
         if cited_nums:
             by_num = {s["n"]: s for s in all_sources}
             cited_sources = [by_num[n] for n in sorted(cited_nums) if n in by_num]
@@ -1318,20 +1336,50 @@ async def summarise(inp: SummariseIn) -> SummariseOut:
 
 
 _FOLLOW_UPS_SYSTEM_PROMPT = (
-    "You suggest follow-up questions for an agricultural assistant on the EU-FarmBook platform. "
-    "Given the user's last question and the assistant's reply, propose 3 short, distinct follow-up "
-    "questions the user might naturally ask next. Each follow-up must:\n"
+    "You suggest evidence-aware follow-up questions for an agricultural assistant. "
+    "Given the user's last question, the assistant's reply, and optional source labels, propose up to "
+    "3 short, distinct follow-up questions the user might naturally ask next. Each follow-up must:\n"
     "- be a single question, phrased in the user's voice (\"How do I...\", \"What about...\")\n"
-    "- stay strictly on agriculture, farming, agri-tech, food systems, or EU-FarmBook content\n"
+    "- stay strictly on the agricultural topic supported by the reply or source labels\n"
+    "- never mention EU-FarmBook, platform features, accounts, registration, dashboards, uploads, "
+    "data linking, imports, exports, synchronization, or database integrations\n"
     "- be no longer than 80 characters\n"
     "- be different from each other and from the user's prior question\n"
     "- be in the same language as the user's prior question\n\n"
-    "Return ONLY a JSON array of exactly 3 strings. No prose, no markdown, no keys. "
+    "Source labels identify relevant topics only; do not invent facts or capabilities from them. "
+    "Return ONLY a JSON array of 0 to 3 strings. No prose, no markdown, no keys. "
     "If you cannot produce useful suggestions, return [].\n"
 )
 
+_FOLLOW_UPS_ALLOWED_MODES = {
+    "attachment_supported",
+    "euf_supported",
+}
 
-def _parse_follow_ups(raw: str) -> list[str]:
+_PROHIBITED_FOLLOW_UP_PATTERNS = (
+    _re.compile(r"\beu[\s-]*farmbook\b", _re.IGNORECASE),
+    _re.compile(r"\b(?:platform|dashboard|portal)\b", _re.IGNORECASE),
+    _re.compile(r"\b(?:register|sign[\s-]*up|create)\b.{0,35}\b(?:account|farm|profile)\b", _re.IGNORECASE),
+    _re.compile(r"\b(?:account|profile)\b.{0,35}\b(?:register|sign[\s-]*up|create|manage)\b", _re.IGNORECASE),
+    _re.compile(
+        r"\b(?:upload|import|export|link|connect|sync|synchroni[sz]e|share)\w*\b"
+        r".{0,50}\b(?:data|database|record|system)\w*\b",
+        _re.IGNORECASE,
+    ),
+    _re.compile(
+        r"\b(?:data|database|record|system)\w*\b"
+        r".{0,50}\b(?:upload|import|export|link|connect|sync|synchroni[sz]e|share)\w*\b",
+        _re.IGNORECASE,
+    ),
+    _re.compile(r"\b(?:EU|European Union|agricultural)\b.{0,25}\bdatabase\b", _re.IGNORECASE),
+)
+
+
+def _is_prohibited_follow_up(candidate: str) -> bool:
+    return any(pattern.search(candidate) for pattern in _PROHIBITED_FOLLOW_UP_PATTERNS)
+
+
+def _parse_follow_ups(raw: str, enforce_policy: bool = True) -> list[str]:
     if not raw:
         return []
 
@@ -1360,8 +1408,10 @@ def _parse_follow_ups(raw: str) -> list[str]:
         candidate = item.strip()
         if not candidate:
             continue
-        if len(candidate) > 120:
-            candidate = candidate[:120].rstrip()
+        if len(candidate) > 80:
+            continue
+        if enforce_policy and _is_prohibited_follow_up(candidate):
+            continue
         normalized = candidate.lower()
         if normalized in seen:
             continue
@@ -1380,14 +1430,24 @@ async def follow_ups(inp: FollowUpsIn) -> FollowUpsOut:
     if not user_msg or not assistant_msg:
         return FollowUpsOut(follow_ups=[], meta={"reason": "empty_input"})
 
+    grounding_mode = (inp.grounding_mode or "").strip().lower()
+    if grounding_mode not in _FOLLOW_UPS_ALLOWED_MODES:
+        return FollowUpsOut(
+            follow_ups=[],
+            meta={"reason": "unsupported_grounding_mode", "grounding_mode": grounding_mode or "unknown"},
+        )
+    if not inp.sources:
+        return FollowUpsOut(
+            follow_ups=[],
+            meta={"reason": "no_cited_sources", "grounding_mode": grounding_mode},
+        )
+
     language_hint = ""
     if inp.language:
         language_hint = f"\nUser's language: {inp.language}\n"
 
     history_block = ""
     if inp.history:
-        # Keep only the trailing turns so the prompt anchors on the actual topic
-        # the user has been exploring, not on an unrelated tail of the reply.
         recent = inp.history[-4:]
         lines: list[str] = []
         for msg in recent:
@@ -1399,10 +1459,24 @@ async def follow_ups(inp: FollowUpsIn) -> FollowUpsOut:
         if lines:
             history_block = "Earlier conversation (for topic anchoring only):\n" + "\n".join(lines) + "\n\n"
 
+    source_block = ""
+    if inp.sources:
+        labels: list[str] = []
+        for source in inp.sources[:5]:
+            title = (source.title or "").strip()
+            project = (source.project or "").strip()
+            label = " - ".join(part for part in (title, project) if part)
+            if label:
+                labels.append(f"- {label[:240]}")
+        if labels:
+            source_block = "Cited source labels (topic anchors only):\n" + "\n".join(labels) + "\n\n"
+
     prompt = (
         f"{_FOLLOW_UPS_SYSTEM_PROMPT}"
         f"{language_hint}\n"
+        f"Grounding mode: {grounding_mode or 'unknown'}\n\n"
         f"{history_block}"
+        f"{source_block}"
         f"User question:\n{user_msg[:1500]}\n\n"
         f"Assistant reply:\n{assistant_msg[:3000]}\n\n"
         "Return JSON now."
@@ -1419,4 +1493,16 @@ async def follow_ups(inp: FollowUpsIn) -> FollowUpsOut:
         return FollowUpsOut(follow_ups=[], meta={"error": str(e)[:200]})
 
     suggestions = _parse_follow_ups(raw)
-    return FollowUpsOut(follow_ups=suggestions, meta={"model": S.VLLM_MODEL})
+    unfiltered = _parse_follow_ups(raw, enforce_policy=False)
+    meta = {
+        "model": S.VLLM_MODEL,
+        "grounding_mode": grounding_mode or "unknown",
+    }
+
+    if len(suggestions) < len(unfiltered):
+        meta["reason"] = "policy_filtered"
+        meta["filtered_count"] = len(unfiltered) - len(suggestions)
+    elif not suggestions:
+
+        meta["reason"] = "no_useful_suggestions"
+    return FollowUpsOut(follow_ups=suggestions, meta=meta)

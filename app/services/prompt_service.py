@@ -196,6 +196,7 @@ def build_history_only_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """The user is asking about the conversation itself. Stay strictly within history."""
     directives = [
@@ -206,7 +207,7 @@ def build_history_only_messages(
             "Do not use outside knowledge or retrieved sources to fill gaps. "
             "If the conversation does not contain the requested information, say that plainly."
         ),
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
         (
             "Be concrete, brief, and faithful to what was actually said. "
             "Skip a follow-up question when a direct recap is enough."
@@ -228,6 +229,7 @@ def build_conversation_only_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """
     Lightweight conversational turn (greeting, thanks, confirmation, brief clarification).
@@ -250,7 +252,7 @@ def build_conversation_only_messages(
             "If the user is asking about a next step but the subject is unclear, "
             "ask one short clarifying question instead of guessing."
         ),
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
         _FOLLOWUP_RULE,
     ]
     system_text = "\n\n".join(directives)
@@ -262,6 +264,7 @@ def build_clarification_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """
     For empty / punctuation-only / otherwise underspecified inputs.
@@ -279,7 +282,7 @@ def build_clarification_messages(
             "question. Do not answer any likely topic, do not mention profile details, and "
             "do not list examples unless the user explicitly asks for help."
         ),
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
     ]
     system_text = "\n\n".join(directives)
     return _assemble_messages(system_text, history_messages, question, user_profile_context=None)
@@ -289,6 +292,7 @@ def build_off_topic_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """
     The user's message is off-topic (not about agriculture / farming / EU-FarmBook).
@@ -307,7 +311,7 @@ def build_off_topic_messages(
             "agriculture-related question. Do not attempt to answer the off-topic question. "
             "Do not bring up retrieved sources or invent any."
         ),
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
     ]
     system_text = "\n\n".join(directives)
     # Off-topic refusals don't benefit from profile context.
@@ -352,6 +356,7 @@ def build_capabilities_messages(
     question: str,
     history_messages: Optional[list[dict]] = None,
     user_profile_context: Optional[str] = None,
+    answer_language: Optional[str] = None,
 ) -> list[dict]:
     """The user is asking what the assistant can do. Answer from product behavior, not retrieval."""
     directives = [
@@ -367,7 +372,7 @@ def build_capabilities_messages(
             "Do not claim external actions you cannot perform; if a capability depends on the user "
             "providing more information or a document, say that clearly."
         ),
-        _LANGUAGE_RULE,
+        _language_rule(answer_language),
         (
             "Keep the answer concise, practical, and organized. "
             "If helpful, end with a short question offering 2-4 concrete next-step options."

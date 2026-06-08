@@ -78,6 +78,8 @@ class FollowUpsIn(BaseModel):
     user_message: str = Field(min_length=1, max_length=4000)
     assistant_message: str = Field(min_length=1, max_length=8000)
     language: Optional[str] = Field(default=None, examples=["en-GB", "fr-FR"])
+    grounding_mode: Optional[str] = Field(default=None, max_length=64)
+    sources: List[SourceItem] = Field(default_factory=list)
     # Optional prior turns so the model can resolve vague follow-ups
     # (e.g. "and what else?") against the actual conversation topic
     # rather than just the immediately-preceding assistant reply.

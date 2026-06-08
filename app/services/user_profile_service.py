@@ -126,7 +126,7 @@ Extract and respond ONLY with valid JSON in this exact format:
         }}
     ],
     "memory_notes": [
-        "short canonical memory note in English, capturing an EXPLICIT long-term fact or preference the user stated about themselves that does NOT fit the structured fact categories above"
+        "short canonical memory note in English for an EXPLICIT stable fact or preference the user stated about themselves; include it even when the same detail also appears in structured fields or facts"
     ],
     "communication_preferences": {{
         "style": "detailed|concise|technical|null",
@@ -154,15 +154,15 @@ Important Rules:
    - topic: Areas of interest for future learning
    - goal: User's objectives and plans
 7. Capture communication preferences if user mentions them ("explain simply", "technical details", etc.)
-8. `memory_notes` are for long-term memory and are subject to a STRICT bar:
-   - Each note must reflect something the user EXPLICITLY stated about themselves in this message. Direct first-person assertions only ("I am vegan", "I'm writing a thesis on X", "skip the preamble in your answers", "my farm is run by my two daughters").
-   - Write notes in a compact canonical form suitable for display and reuse later, for example: "Prefers concise answers", "Writing a thesis on soil carbon", "Farm is run by two daughters". Do NOT start notes with "User ...".
-   - DO NOT speculate about the user's emotional state, mood, frustration, intentions, motivations, or interests. No inferences, no profiling, no "user may be...", "user is likely...", "user seems to be...".
-   - DO NOT summarize what the conversation is about. The notes are about the user as a person, not about the current topic.
-   - DO NOT store ephemeral session events like what the user just asked for, how they reacted to a previous answer, or that they requested a format/style for a single turn unless it is clearly a persistent preference.
-   - DO NOT create a note that uses hedging words like "may", "might", "possibly", "likely", "perhaps", "seems", "appears", "could be", "indicating".
-   - DO NOT invent facts. If the message contains nothing the user explicitly stated about themselves, return an empty array.
-   - When in doubt, leave it out. The default state of `memory_notes` is `[]`. Only add when the user has unmistakably told you a stable fact about themselves.
+8. `memory_notes` are the user-visible long-term memory list and are subject to a STRICT bar:
+   - Include every stable fact the user EXPLICITLY stated about themselves, even when it is also represented in `facts`, `region`, `farm_type`, `crops`, or communication preferences.
+   - Direct first-person assertions only ("I am vegan", "I farm in Crete", "I grow olives", "skip the preamble in your answers").
+   - Write notes in a compact canonical form suitable for display and reuse later, for example: "Farms in Crete", "Grows olives", "Prefers concise answers". Do NOT start notes with "User ...".
+   - DO NOT speculate about emotional state, mood, frustration, intentions, motivations, or interests.
+   - DO NOT summarize what the conversation is about.
+   - DO NOT store temporary problems or session events unless the user clearly presents them as durable context.
+   - DO NOT use hedging words such as "may", "might", "likely", "perhaps", "seems", or "appears".
+   - If the message contains no explicit stable detail about the user, return an empty array.
 
 Examples:
 Input (German): "Ich habe ein Problem mit Blattläusen auf meinen Tomaten in Bayern"
@@ -184,6 +184,7 @@ Output: {{
             "confidence": 0.9
         }}
     ],
+    "memory_notes": ["Farms in Bavaria, Germany", "Grows tomatoes"],
     "communication_preferences": {{"style": null, "preferred_language": null}}
 }}
 
@@ -205,6 +206,12 @@ Output: {{
             "text": "User operates an organic farm",
             "confidence": 0.95
         }}
+    ],
+    "memory_notes": [
+        "Has been farming organically for 5 years",
+        "Operates an organic farm",
+        "Farms in Provence, France",
+        "Grows lavender"
     ],
     "communication_preferences": {{"style": null, "preferred_language": null}}
 }}"""
@@ -511,6 +518,58 @@ Output: {{
                 break
         return filtered
 
+    _STABLE_MEMORY_FACT_CATEGORIES = {
+        "preference",
+        "tool",
+        "experience",
+        "location",
+        "farm_type",
+        "crop",
+    }
+
+    @classmethod
+    def _memory_note_from_fact(cls, fact: UserFact) -> Optional[str]:
+        """Convert an explicit, stable structured fact into a displayable memory."""
+        if fact.category not in cls._STABLE_MEMORY_FACT_CATEGORIES or fact.confidence < 0.9:
+            return None
+
+        text = (fact.text or "").strip()
+        if not text:
+            return None
+
+        text = re.sub(r"^(?:the\s+)?user['’]s\s+", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"^(?:the\s+)?user\s+", "", text, flags=re.IGNORECASE)
+        if not text:
+            return None
+
+        candidate = text[0].upper() + text[1:]
+        return candidate if cls._is_memory_note_usable(candidate) else None
+
+    @classmethod
+    def _memory_candidates(
+        cls,
+        extracted: ExtractedProfile,
+        additional_facts: Optional[List[UserFact]] = None,
+    ) -> List[str]:
+        """Combine LLM notes with explicit stable facts for ChatGPT-style memory."""
+        candidates = list(extracted.memory_notes)
+        candidates.extend(
+            note
+            for fact in [*extracted.facts, *(additional_facts or [])]
+            if (note := cls._memory_note_from_fact(fact))
+        )
+        if extracted.communication_style:
+            candidates.append(f"Prefers {extracted.communication_style} answers")
+
+        deduplicated: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = candidate.strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduplicated.append(candidate.strip())
+        return deduplicated
+
     @classmethod
     async def delete_memory_note(cls, note_id: int, auth_token: str) -> bool:
         """Soft-delete a single memory note by id."""
@@ -800,11 +859,19 @@ Output: {{
                 limit=MEMORY_NOTE_CAP,
             )
             existing_note_dicts = [{"text": n.get("note_text", "")} for n in existing_notes]
-            at_cap = len(existing_notes) >= MEMORY_NOTE_CAP
             notes_added = 0
             notes_rejected_speculative = 0
 
-            for note_text in extracted.memory_notes:
+            historical_facts = [
+                UserFact(
+                    category=(item.get("category") or ""),
+                    text=(item.get("text") or ""),
+                    confidence=float(item.get("confidence") or 0.0),
+                )
+                for item in existing_facts
+            ]
+            memory_candidates = cls._memory_candidates(extracted, historical_facts)
+            for note_text in memory_candidates:
                 if not cls._looks_like_explicit_fact(note_text):
                     notes_rejected_speculative += 1
                     logger.info(f"Rejected speculative memory note: {note_text[:80]}...")
@@ -815,7 +882,7 @@ Output: {{
                     logger.debug(f"Skipped duplicate-or-similar memory note: {note_text[:50]}...")
                     continue
 
-                if at_cap:
+                if len(existing_note_dicts) >= MEMORY_NOTE_CAP:
                     # User is at the soft cap; refuse new notes rather than evict at
                     # random. The user can prune via the memory UI when they want
                     # the model to remember something else.
