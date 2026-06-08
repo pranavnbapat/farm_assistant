@@ -1,13 +1,22 @@
 import base64
 import json
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
+from app.services.document_export_service import generate_document
 from app.services.image_service import create_image_stub, delete_image_for_user
 from app.services.pdf_service import create_pdf_stub, delete_doc_for_user
 
 router = APIRouter()
+
+
+class DocumentExportIn(BaseModel):
+    title: str = Field(default="Farm Assistant response", max_length=200)
+    content: str = Field(min_length=1, max_length=100_000)
+    format: Literal["pdf", "docx", "csv", "xlsx", "pptx"]
 
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
@@ -29,6 +38,34 @@ def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
     except Exception:
         return None
 
+
+@router.post("/chatbot/api/files/export", tags=["Files"], summary="Export an assistant response")
+@router.post("/files/export", include_in_schema=False)
+async def export_document(request: Request, body: DocumentExportIn):
+    owner_id = _extract_user_uuid_from_token(request.headers.get("Authorization", ""))
+    if not owner_id:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    try:
+        document = generate_document(
+            title=body.title.strip() or "Farm Assistant response",
+            content=body.content,
+            export_format=body.format,
+        )
+    except ImportError as error:
+        raise HTTPException(status_code=503, detail=f"{body.format.upper()} export is not installed.") from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Unable to generate {body.format.upper()} document.") from error
+
+    return Response(
+        content=document.payload,
+        media_type=document.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{document.filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 @router.post("/chatbot/api/files/pdf", tags=["Files"], summary="Upload a PDF for chat context")
 @router.post("/files/pdf", include_in_schema=False)

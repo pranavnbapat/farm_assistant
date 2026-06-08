@@ -213,6 +213,7 @@ The documented public surface includes:
 - `POST /chatbot/api/users/me/memory`
 - `DELETE /chatbot/api/users/me/memory/{note_id}`
 - `POST /chatbot/api/users/me/profile/build`
+- `POST /chatbot/api/files/export` (`pdf`, `docx`, `csv`, `xlsx`, `pptx`)
 - `POST /chatbot/api/files/pdf`
 - `DELETE /chatbot/api/files/pdf/{doc_id}`
 - `POST /chatbot/api/files/image`

@@ -51,6 +51,14 @@ _FORMATTING_RULE = (
 )
 
 
+_EXPORT_RULE = (
+    "When the user explicitly asks to create, generate, save, download, or export the answer as "
+    "PDF, DOCX, CSV, XLSX, or PPTX, provide the complete requested content in the answer and do not "
+    "claim that file creation is unavailable. The application will convert the completed answer into "
+    "the requested file format. Use a Markdown table when the requested output is CSV or XLSX."
+)
+
+
 def _language_rule(answer_language: Optional[str] = None) -> str:
     """
     Build the language directive for an answer turn. When the question's language
@@ -185,6 +193,7 @@ def build_messages(
     )
     directives.append(_BREVITY_RULE)
     directives.append(_FORMATTING_RULE)
+    directives.append(_EXPORT_RULE)
     directives.append(_FOLLOWUP_RULE)
 
     system_text = "\n\n".join(directives)
@@ -346,6 +355,7 @@ def build_general_knowledge_messages(
         ),
         _BREVITY_RULE,
         _FORMATTING_RULE,
+        _EXPORT_RULE,
         _FOLLOWUP_RULE,
     ]
     system_text = "\n\n".join(directives)
@@ -367,7 +377,7 @@ def build_capabilities_messages(
         ),
         (
             "You can help with agriculture and EU-FarmBook-related questions, explain concepts, "
-            "summarize or discuss uploaded PDF content and uploaded images when available, recap the conversation, "
+            "summarize or discuss uploaded PDF content and uploaded images when available, recap the conversation, export answers as PDF, DOCX, CSV, XLSX, or PPTX, "
             "compare options, and guide the user step by step on a farming or project-related topic. "
             "Do not claim external actions you cannot perform; if a capability depends on the user "
             "providing more information or a document, say that clearly."

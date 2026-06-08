@@ -4,6 +4,10 @@ Jinja2==3.1.6
 pydantic==2.13.3
 pydantic-settings==2.14.0
 pypdf==6.10.2
+openpyxl==3.1.5
+python-docx==1.2.0
+python-pptx==1.0.2
+reportlab==4.5.1
 python-dotenv==1.2.2
 python-multipart==0.0.26
 sse-starlette==3.4.1
