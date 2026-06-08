@@ -13,6 +13,7 @@ This service builds and maintains user profiles by:
 import logging
 import re
 import json
+from difflib import SequenceMatcher
 import hashlib
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -461,6 +462,11 @@ Output: {{
         "doesn't want to talk",
         "don't want to talk",
         "stated '",
+        "wants information",
+        "wants details",
+        "is associated with",
+        "associated with eu-farmbook",
+        "is monitoring",
         "states '",
     )
 
@@ -498,22 +504,60 @@ Output: {{
 
     @classmethod
     def _looks_like_explicit_fact(cls, note_text: str) -> bool:
-        """
-        Reject memory notes that read like LLM speculation rather than an
-        explicit user statement. Cheap, language-rough check; works alongside
-        the prompt-level instructions.
-        """
+        """Reject notes that fail the durable-memory quality checks."""
         return cls._is_memory_note_usable(note_text)
+
+    _MEMORY_SIGNATURE_STOPWORDS = {
+        "a", "an", "the", "is", "are", "was", "were", "has", "have",
+        "cultivating", "cultivates", "growing", "grows", "raises", "raising",
+        "uses", "using", "operates", "owns", "keeps",
+    }
+
+    @classmethod
+    def _canonicalize_memory_text(cls, note_text: str) -> str:
+        text = re.sub(r"\s+", " ", (note_text or "").strip())
+        text = re.sub(r"^Is cultivating\s+", "Grows ", text, flags=re.IGNORECASE)
+        text = re.sub(r"^Cultivates\s+", "Grows ", text, flags=re.IGNORECASE)
+        return text[0].upper() + text[1:] if text else ""
+
+    @classmethod
+    def _memory_signature(cls, note_text: str) -> str:
+        words = re.findall(r"[a-z0-9]+", note_text.lower())
+        normalized: List[str] = []
+        for word in words:
+            if word in cls._MEMORY_SIGNATURE_STOPWORDS:
+                continue
+            if len(word) > 4 and word.endswith("ies"):
+                word = word[:-3] + "y"
+            elif len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+                word = word[:-1]
+            normalized.append(word)
+        return " ".join(sorted(set(normalized)))
+
+    @classmethod
+    def _is_similar_memory_signature(cls, left: str, right: str) -> bool:
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        return SequenceMatcher(None, left, right).ratio() >= 0.84
 
     @classmethod
     def filter_memory_notes(cls, memory_notes: List[Dict], limit: Optional[int] = None) -> List[Dict]:
-        """Filter legacy and newly-extracted memory notes down to usable items."""
+        """Return usable, canonical, semantically consolidated memory notes."""
         filtered: List[Dict] = []
+        signatures: List[str] = []
         for note in memory_notes or []:
-            text = (note.get("note_text") or "").strip()
+            text = cls._canonicalize_memory_text(note.get("note_text") or "")
             if not cls._is_memory_note_usable(text):
                 continue
-            filtered.append(note)
+            signature = cls._memory_signature(text)
+            if any(cls._is_similar_memory_signature(signature, existing) for existing in signatures):
+                continue
+            canonical_note = dict(note)
+            canonical_note["note_text"] = text
+            filtered.append(canonical_note)
+            signatures.append(signature)
             if limit is not None and len(filtered) >= limit:
                 break
         return filtered
@@ -859,6 +903,10 @@ Output: {{
                 limit=MEMORY_NOTE_CAP,
             )
             existing_note_dicts = [{"text": n.get("note_text", "")} for n in existing_notes]
+            existing_signatures = [
+                cls._memory_signature(n.get("note_text", ""))
+                for n in existing_notes
+            ]
             notes_added = 0
             notes_rejected_speculative = 0
 
@@ -877,9 +925,10 @@ Output: {{
                     logger.info(f"Rejected speculative memory note: {note_text[:80]}...")
                     continue
 
-                pseudo_fact = UserFact(category="note", text=note_text)
-                if cls.is_duplicate_fact(pseudo_fact, existing_note_dicts, threshold=DEDUP_THRESHOLD):
-                    logger.debug(f"Skipped duplicate-or-similar memory note: {note_text[:50]}...")
+                canonical_note = cls._canonicalize_memory_text(note_text)
+                note_signature = cls._memory_signature(canonical_note)
+                if any(cls._is_similar_memory_signature(note_signature, existing) for existing in existing_signatures):
+                    logger.debug(f"Skipped duplicate-or-similar memory note: {canonical_note[:50]}...")
                     continue
 
                 if len(existing_note_dicts) >= MEMORY_NOTE_CAP:
@@ -891,7 +940,7 @@ Output: {{
 
                 success = await cls.add_memory_note(
                     user_uuid=user_uuid,
-                    note_text=note_text,
+                    note_text=canonical_note,
                     auth_token=auth_token,
                     confidence=0.9,
                     source_language=extracted.detected_language,
@@ -902,8 +951,9 @@ Output: {{
                     # Append to in-memory list so subsequent notes in the same batch
                     # also dedup against just-added ones.
                     existing_note_dicts.append({"text": note_text})
-                    logger.info(f"Added memory note: {note_text[:60]}...")
-
+                    existing_note_dicts.append({"text": canonical_note})
+                    existing_signatures.append(note_signature)
+                    logger.info(f"Added memory note: {canonical_note[:60]}...")
             result["memory_notes_added"] = notes_added
             if notes_rejected_speculative:
                 result["memory_notes_rejected"] = notes_rejected_speculative

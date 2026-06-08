@@ -77,10 +77,39 @@ TurnMode = Literal[
 
 
 def _get_answer_language(question: str) -> str:
-    """Resolve an explicit output language, defaulting uncertain text to English."""
+    """Resolve a deterministic language name from the latest message only."""
     language_code = detect_language_confident(question) or detect_language(question)
     language_name = get_language_name(language_code)
     return "English" if language_name == "Unknown" else language_name
+
+
+async def _resolve_answer_language(question: str) -> str:
+    """Detect the latest message language without consulting conversation history."""
+    confident_code = detect_language_confident(question)
+    if confident_code:
+        return get_language_name(confident_code)
+
+    prompt = (
+        "Identify the language of the user message below. Consider only this message; "
+        "do not infer language from any conversation history or user preference.\n"
+        "Return JSON only as {\"language_code\":\"xx\"}, using a two-letter ISO 639-1 code.\n\n"
+        f"User message:\n{question}"
+    )
+    try:
+        raw = await asyncio.wait_for(
+            generate_once(prompt, temperature=0.0, max_tokens=12),
+            timeout=1.5,
+        )
+        match = _re.search(r"\{.*?\}", raw or "", flags=_re.DOTALL)
+        if match:
+            code = (json.loads(match.group(0)).get("language_code") or "").strip().lower()
+            language_name = get_language_name(code)
+            if language_name != "Unknown":
+                return language_name
+    except Exception:
+        pass
+
+    return _get_answer_language(question)
 
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
@@ -772,10 +801,11 @@ async def ask_stream(
                 history_text=history_text,
             )
 
-        retrieval_q, turn_strategy, profile_context = await asyncio.gather(
+        retrieval_q, turn_strategy, profile_context, answer_language = await asyncio.gather(
             _retrieval_q_task(),
             _strategy_task(),
             profile_future,
+            _resolve_answer_language(user_q),
         )
 
         # Concurrency gate
@@ -1018,7 +1048,7 @@ async def ask_stream(
                 "sid": getattr(s, "sid", None),
                 "id": getattr(s, "id", None),
                 "title": getattr(s, "title", None),
-                "project": getattr(s, "project", None),
+        # This value is resolved solely from the raw latest user message.
                 "url": getattr(s, "url", None),
                 "display_url": getattr(s, "display_url", None),
                 "license": getattr(s, "license", None),
@@ -1043,11 +1073,7 @@ async def ask_stream(
             _max_tokens = S.MAX_OUTPUT_TOKENS
         _temperature = inp.temperature if inp.temperature is not None else S.TEMPERATURE
         
-        # Answer in the language of the user's question, not the (often non-English)
-        # Always give the model an explicit answer language. Confident marker
-        # matches preserve multilingual behavior; otherwise default to English.
-        # Leaving this unset lets retrieved documents or stored context dominate.
-        answer_language = _get_answer_language(user_q)
+        # The answer language is resolved solely from the raw latest user message.
         history_messages_for_prompt = state.get("messages", [])
         if turn_strategy == "clarification_only":
             messages = build_clarification_messages(

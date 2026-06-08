@@ -10,10 +10,9 @@ from typing import Optional
 
 logger = logging.getLogger("farm-assistant.language")
 
-
-# Common words for major EU languages (simplified detection)
+# Common words for major EU languages (simplified detection).
 LANGUAGE_MARKERS = {
-    "en": {"the", "and", "is", "are", "farm", "what", "how", "help", "my"},
+    "en": {"the", "and", "is", "are", "farm", "what", "how", "help", "my", "give", "me", "some", "crop", "rotation", "techniques", "in", "tabular", "format", "tell", "about", "please", "can", "you"},
     "de": {"der", "die", "das", "und", "ist", "bauernhof", "mein", "wie", "hilfe"},
     "fr": {"le", "la", "les", "et", "est", "mon", "ferme", "comment", "aide"},
     "es": {"el", "la", "los", "las", "y", "es", "mi", "granja", "cómo", "ayuda"},
@@ -35,104 +34,71 @@ LANGUAGE_MARKERS = {
     "sl": {"in", "je", "moja", "kmetija", "kako", "pomoč"},
     "lv": {"un", "ir", "mana", "saimniecība", "kā", "palīdzība"},
     "et": {"ja", "on", "minu", "talu", "kuidas", "abi"},
-    "mt": {"u", "hu", "tieghi", "bidwi", "kif", "ghajnuna"},  # Maltese (simplified)
-    "ga": {"agus", "tá", "mo", "feirm", "conas", "cabhair"},  # Irish
+    "mt": {"u", "hu", "tieghi", "bidwi", "kif", "ghajnuna"},
+    "ga": {"agus", "tá", "mo", "feirm", "conas", "cabhair"},
 }
 
-# ISO 639-1 to English name mapping
 LANGUAGE_NAMES = {
-    "en": "English",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "nl": "Dutch",
-    "pl": "Polish",
-    "ro": "Romanian",
-    "pt": "Portuguese",
-    "el": "Greek",
-    "hu": "Hungarian",
-    "cs": "Czech",
-    "sv": "Swedish",
-    "bg": "Bulgarian",
-    "hr": "Croatian",
-    "da": "Danish",
-    "fi": "Finnish",
-    "sk": "Slovak",
-    "lt": "Lithuanian",
-    "sl": "Slovenian",
-    "lv": "Latvian",
-    "et": "Estonian",
-    "mt": "Maltese",
-    "ga": "Irish",
+    "en": "English", "de": "German", "fr": "French", "es": "Spanish",
+    "it": "Italian", "nl": "Dutch", "pl": "Polish", "ro": "Romanian",
+    "pt": "Portuguese", "el": "Greek", "hu": "Hungarian", "cs": "Czech",
+    "sv": "Swedish", "bg": "Bulgarian", "hr": "Croatian", "da": "Danish",
+    "fi": "Finnish", "sk": "Slovak", "lt": "Lithuanian", "sl": "Slovenian",
+    "lv": "Latvian", "et": "Estonian", "mt": "Maltese", "ga": "Irish",
 }
 
-# EU language codes (24 official languages)
 EU_LANGUAGE_CODES = set(LANGUAGE_NAMES.keys())
 
 
-def detect_language(text: str) -> str:
-    """
-    Detect the language of the given text.
-    Returns ISO 639-1 language code (defaults to 'en' if uncertain).
-    
-    This is a simple heuristic-based detector. For production use,
-    consider using fastText or langdetect library.
-    """
-    if not text or not text.strip():
-        return "en"
-    
-    text_lower = text.lower()
-    words = set(re.findall(r'\b[a-zA-Zà-ÿÀ-Ÿ]+\b', text_lower))
-    
-    if not words:
-        return "en"
-    
-    # Score each language by word overlap
-    scores = {}
-    for lang_code, markers in LANGUAGE_MARKERS.items():
-        overlap = words & markers
-        if overlap:
-            scores[lang_code] = len(overlap)
-    
-    if scores:
-        # Return language with highest score
-        return max(scores, key=scores.get)
-    
-    # Default to English if no markers found
-    return "en"
-
-
 def detect_language_confident(text: str) -> Optional[str]:
-    """
-    Like detect_language, but returns None when no marker word matches — i.e. when
-    detect_language would only be defaulting to "en" with no real evidence. Lets
-    callers tell "confidently this language" apart from "no signal, fell back to
-    English", so they don't force the wrong language on an undetected question.
-    """
+    """Return a language only when marker evidence is meaningful and unambiguous."""
     if not text or not text.strip():
         return None
 
-    words = set(re.findall(r'\b[a-zA-Zà-ÿÀ-Ÿ]+\b', text.lower()))
+    words = set(re.findall(r"\b[a-zA-Zà-ÿÀ-Ÿ]+\b", text.lower()))
     if not words:
         return None
 
-    scores = {}
-    for lang_code, markers in LANGUAGE_MARKERS.items():
-        overlap = words & markers
-        if overlap:
-            scores[lang_code] = len(overlap)
+    informative_markers = {
+        language: {marker for marker in markers if len(marker) > 1}
+        for language, markers in LANGUAGE_MARKERS.items()
+    }
+    marker_languages: dict[str, set[str]] = {}
+    for language, markers in informative_markers.items():
+        for marker in markers:
+            marker_languages.setdefault(marker, set()).add(language)
 
-    if scores:
-        return max(scores, key=scores.get)
+    overlaps = {
+        language: words & markers
+        for language, markers in informative_markers.items()
+    }
+    overlaps = {language: overlap for language, overlap in overlaps.items() if overlap}
+    if not overlaps:
+        return None
+
+    best_score = max(len(overlap) for overlap in overlaps.values())
+    leaders = [language for language, overlap in overlaps.items() if len(overlap) == best_score]
+    if len(leaders) != 1:
+        return None
+
+    leader = leaders[0]
+    if best_score >= 2:
+        return leader
+
+    marker = next(iter(overlaps[leader]))
+    if len(marker) >= 3 and marker_languages.get(marker) == {leader}:
+        return leader
     return None
+
+
+def detect_language(text: str) -> str:
+    """Detect a supported language, defaulting uncertain or ambiguous text to English."""
+    return detect_language_confident(text) or "en"
 
 
 def get_language_name(lang_code: str) -> str:
     """Get the English name for a language code."""
-    return LANGUAGE_NAMES.get(lang_code.lower(), "Unknown")
-
-
+    return LANGUAGE_NAMES.get((lang_code or "").lower(), "Unknown")
 def is_eu_language(lang_code: str) -> bool:
     """Check if the language code is one of the 24 EU official languages."""
     return lang_code.lower() in EU_LANGUAGE_CODES
