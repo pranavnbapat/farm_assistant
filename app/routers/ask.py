@@ -59,7 +59,7 @@ from app.services.prompt_service import (
 from app.services.search_service import build_search_payload, collect_os_items
 from app.utils.language_utils import detect_language, detect_language_confident, get_language_name
 from app.services.user_profile_service import UserProfileService
-from app.schemas import AskIn, ChatMessageStreamIn, FollowUpsIn, FollowUpsOut, SummariseIn, SummariseOut
+from app.schemas import AskIn, ChatMessageStreamIn, ExportIntentIn, ExportIntentOut, FollowUpsIn, FollowUpsOut, SummariseIn, SummariseOut
 
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
@@ -1405,6 +1405,54 @@ def _is_prohibited_follow_up(candidate: str) -> bool:
     return any(pattern.search(candidate) for pattern in _PROHIBITED_FOLLOW_UP_PATTERNS)
 
 
+_EXPORT_INTENT_SYSTEM_PROMPT = """Classify the user's latest message in any language.
+Return ONLY one JSON object with these keys:
+- intent: normal_chat, export_previous, or generate_export
+- format: pdf, docx, csv, xlsx, pptx, or null
+- confidence: number from 0 to 1
+
+Use export_previous when the user asks to convert/download/save the preceding answer.
+Use generate_export when the user asks for new substantive content delivered as a file.
+Use normal_chat for questions about file formats, unsupported formats, or ordinary conversation.
+Never generate document content. Never add prose or markdown."""
+_EXPORT_FORMATS = {"pdf", "docx", "csv", "xlsx", "pptx"}
+_EXPORT_INTENTS = {"normal_chat", "export_previous", "generate_export"}
+
+
+def _parse_export_intent(raw: str) -> ExportIntentOut:
+    if not raw:
+        return ExportIntentOut(meta={"reason": "empty_response"})
+
+    text = raw.strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return ExportIntentOut(meta={"reason": "invalid_json"})
+
+    try:
+        data = json.loads(text[start : end + 1])
+    except Exception:
+        return ExportIntentOut(meta={"reason": "invalid_json"})
+
+    intent = str(data.get("intent") or "").strip().lower()
+    export_format = str(data.get("format") or "").strip().lower() or None
+    try:
+        confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    if intent not in _EXPORT_INTENTS:
+        return ExportIntentOut(meta={"reason": "invalid_intent"})
+    if intent == "normal_chat":
+        return ExportIntentOut(intent="normal_chat", confidence=confidence)
+    if export_format not in _EXPORT_FORMATS:
+        return ExportIntentOut(meta={"reason": "invalid_format"})
+    if confidence < 0.75:
+        return ExportIntentOut(confidence=confidence, meta={"reason": "low_confidence"})
+
+    return ExportIntentOut(intent=intent, format=export_format, confidence=confidence)
+
+
 def _parse_follow_ups(raw: str, enforce_policy: bool = True) -> list[str]:
     if not raw:
         return []
@@ -1446,6 +1494,39 @@ def _parse_follow_ups(raw: str, enforce_policy: bool = True) -> list[str]:
         if len(cleaned) >= 3:
             break
     return cleaned
+
+
+@router.post("/chatbot/api/export-intent", response_model=ExportIntentOut, tags=["Chats"], summary="Classify a document export request")
+async def classify_export_intent(inp: ExportIntentIn) -> ExportIntentOut:
+    query = (inp.query or "").strip()
+    previous = (inp.previous_assistant_message or "").strip()
+    user_content = (
+        f"Previous assistant answer exists: {'yes' if previous else 'no'}\n"
+        f"Previous assistant answer excerpt:\n{previous[:1200] if previous else '(none)'}\n\n"
+        f"Latest user message:\n{query[:1500]}\n\n"
+        "Return JSON now."
+    )
+
+    try:
+        raw = await generate_once(
+            "",
+            temperature=0.0,
+            max_tokens=80,
+            messages=[
+                {"role": "system", "content": _EXPORT_INTENT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        )
+    except httpx.HTTPStatusError as error:
+        logger.error("Export-intent LLM error %s: %s", error.response.status_code, (error.response.text or "")[:300])
+        return ExportIntentOut(meta={"reason": "upstream_error", "upstream_status": error.response.status_code})
+    except Exception as error:
+        logger.warning("Export-intent classification failed: %s", error)
+        return ExportIntentOut(meta={"reason": "classifier_unavailable"})
+
+    result = _parse_export_intent(raw)
+    result.meta["model"] = S.VLLM_MODEL
+    return result
 
 
 @router.post("/chatbot/api/follow-ups", response_model=FollowUpsOut, tags=["Chats"], summary="Suggest follow-up questions for the last turn")

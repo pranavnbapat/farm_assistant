@@ -1,6 +1,6 @@
 # app/schemas.py
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +71,18 @@ class ChatTurnLogIn(BaseModel):
 
 class MessageFeedbackIn(BaseModel):
     feedback: str = Field(examples=["up", "down", "none"])
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExportIntentIn(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    previous_assistant_message: Optional[str] = Field(default=None, max_length=8000)
+
+
+class ExportIntentOut(BaseModel):
+    intent: Literal["normal_chat", "export_previous", "generate_export"] = "normal_chat"
+    format: Optional[Literal["pdf", "docx", "csv", "xlsx", "pptx"]] = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
