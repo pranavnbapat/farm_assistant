@@ -55,7 +55,10 @@ _EXPORT_RULE = (
     "When the user explicitly asks to create, generate, save, download, or export the answer as "
     "PDF, DOCX, CSV, XLSX, or PPTX, provide the complete requested content in the answer and do not "
     "claim that file creation is unavailable. The application will convert the completed answer into "
-    "the requested file format. Use a Markdown table when the requested output is CSV or XLSX."
+    "the requested file format. Return only the substantive document content. Do not include download "
+    "instructions, copy-and-paste steps, conversion instructions, filename or save instructions, "
+    "confirmation requests, or offers for additional formats. Use one Markdown table when the requested "
+    "output is CSV or XLSX, without also emitting CSV source text unless CSV was explicitly requested."
 )
 
 
