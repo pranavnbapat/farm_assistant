@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+from datetime import date
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -25,7 +26,7 @@ class GeneratedDocument:
 
 
 def _safe_filename(title: str, export_format: ExportFormat) -> str:
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", title.strip()).strip("-._")
+    stem = re.sub(r"[^\w.-]+", "-", title.strip(), flags=re.UNICODE).strip("-._")
     return f"{(stem or 'farm-assistant-response')[:80]}.{export_format}"
 
 
@@ -127,8 +128,9 @@ def _generate_docx(title: str, content: str) -> bytes:
     return output.getvalue()
 
 
-def _generate_pdf(title: str, content: str) -> bytes:
+def _generate_pdf(title: str, content: str, sources: list[dict[str, str]] | None = None) -> bytes:
     from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
@@ -142,11 +144,33 @@ def _generate_pdf(title: str, content: str) -> bytes:
         pdfmetrics.registerFont(TTFont("DejaVuSans", str(font_path)))
         font_name = "DejaVuSans"
     output = io.BytesIO()
-    document = SimpleDocTemplate(output, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm, topMargin=18 * mm, bottomMargin=18 * mm, title=title)
+    document = SimpleDocTemplate(
+        output, pagesize=A4, rightMargin=20 * mm, leftMargin=20 * mm,
+        topMargin=18 * mm, bottomMargin=20 * mm, title=title,
+        author="EU-FarmBook Farm Assistant", subject="Agricultural knowledge report",
+    )
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("ExportTitle", parent=styles["Title"], fontName=font_name)
+    brand_style = ParagraphStyle(
+        "ExportBrand", parent=styles["BodyText"], fontName=font_name,
+        fontSize=9, textColor=colors.HexColor("#5B4DB7"), alignment=TA_CENTER,
+    )
+    title_style = ParagraphStyle(
+        "ExportTitle", parent=styles["Title"], fontName=font_name,
+        fontSize=22, leading=27, textColor=colors.HexColor("#162447"), alignment=TA_CENTER,
+    )
+    meta_style = ParagraphStyle(
+        "ExportMeta", parent=styles["BodyText"], fontName=font_name,
+        fontSize=8.5, textColor=colors.HexColor("#718096"), alignment=TA_CENTER,
+    )
     body_style = ParagraphStyle("ExportBody", parent=styles["BodyText"], fontName=font_name, leading=16, spaceAfter=8)
-    story = [Paragraph(escape(title), title_style), Spacer(1, 8 * mm)]
+    story = [
+        Paragraph("EU-FarmBook&nbsp;&nbsp;|&nbsp;&nbsp;Farm Assistant", brand_style),
+        Spacer(1, 4 * mm),
+        Paragraph(escape(title), title_style),
+        Spacer(1, 2 * mm),
+        Paragraph(f"Generated {date.today().strftime('%d %B %Y')}", meta_style),
+        Spacer(1, 8 * mm),
+    ]
     table_rows = _markdown_table(content)
     if table_rows:
         column_widths = [174 * mm / max(1, len(table_rows[0]))] * len(table_rows[0])
@@ -164,7 +188,37 @@ def _generate_pdf(title: str, content: str) -> bytes:
     else:
         for paragraph in _plain_text(content).split("\n\n"):
             story.append(Paragraph(escape(paragraph).replace("\n", "<br/>"), body_style))
-    document.build(story)
+    source_items = [source for source in (sources or []) if source.get("title") or source.get("project") or source.get("url") or source.get("display_url")]
+    if source_items:
+        source_heading = ParagraphStyle(
+            "SourceHeading", parent=styles["Heading2"], fontName=font_name,
+            textColor=colors.HexColor("#162447"), spaceBefore=12, spaceAfter=8,
+        )
+        source_style = ParagraphStyle(
+            "ExportSource", parent=body_style, fontSize=9, leading=13,
+            leftIndent=12, firstLineIndent=-12,
+        )
+        story.extend([Spacer(1, 5 * mm), Paragraph("Sources", source_heading)])
+        for index, source in enumerate(source_items, start=1):
+            label = source.get("title") or source.get("project") or source.get("url") or f"Source {index}"
+            url = source.get("url") or source.get("display_url") or ""
+            rendered_label = (
+                f'<link href="{escape(url, quote=True)}" color="#3156A3">{escape(label)}</link>'
+                if url else escape(label)
+            )
+            story.append(Paragraph(f"{index}. {rendered_label}", source_style))
+
+    def add_footer(canvas, doc):
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor("#D9DFEA"))
+        canvas.line(20 * mm, 14 * mm, 190 * mm, 14 * mm)
+        canvas.setFillColor(colors.HexColor("#718096"))
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(20 * mm, 9 * mm, "EU-FarmBook Farm Assistant")
+        canvas.drawRightString(190 * mm, 9 * mm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=add_footer, onLaterPages=add_footer)
     return output.getvalue()
 
 
@@ -208,13 +262,17 @@ def _generate_pptx(title: str, content: str) -> bytes:
     return output.getvalue()
 
 
-def generate_document(title: str, content: str, export_format: ExportFormat) -> GeneratedDocument:
+def generate_document(
+    title: str,
+    content: str,
+    export_format: ExportFormat,
+    sources: list[dict[str, str]] | None = None,
+) -> GeneratedDocument:
     generators = {
-        "pdf": _generate_pdf,
         "docx": _generate_docx,
         "csv": _generate_csv,
         "xlsx": _generate_xlsx,
         "pptx": _generate_pptx,
     }
-    payload = generators[export_format](title, content)
+    payload = _generate_pdf(title, content, sources) if export_format == "pdf" else generators[export_format](title, content)
     return GeneratedDocument(payload, _safe_filename(title, export_format), MIME_TYPES[export_format])

@@ -13,10 +13,19 @@ from app.services.pdf_service import create_pdf_stub, delete_doc_for_user
 router = APIRouter()
 
 
+class DocumentSourceIn(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=500)
+    project: Optional[str] = Field(default=None, max_length=500)
+    url: Optional[str] = Field(default=None, max_length=2000)
+    display_url: Optional[str] = Field(default=None, max_length=2000)
+    license: Optional[str] = Field(default=None, max_length=200)
+
+
 class DocumentExportIn(BaseModel):
     title: str = Field(default="Farm Assistant response", max_length=200)
     content: str = Field(min_length=1, max_length=100_000)
     format: Literal["pdf", "docx", "csv", "xlsx", "pptx"]
+    sources: list[DocumentSourceIn] = Field(default_factory=list, max_length=50)
 
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
@@ -51,6 +60,7 @@ async def export_document(request: Request, body: DocumentExportIn):
             title=body.title.strip() or "Farm Assistant response",
             content=body.content,
             export_format=body.format,
+            sources=[source.model_dump(exclude_none=True) for source in body.sources],
         )
     except ImportError as error:
         raise HTTPException(status_code=503, detail=f"{body.format.upper()} export is not installed.") from error

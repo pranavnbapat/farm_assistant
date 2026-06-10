@@ -16,11 +16,23 @@ CONTENT = """## Crop comparison
 | Peas | 4 years | Adds nitrogen |
 """
 
-
 def test_generate_pdf():
-    document = generate_document("Crop rotation", CONTENT, "pdf")
+    document = generate_document(
+        "Crop rotation",
+        CONTENT,
+        "pdf",
+        sources=[{"title": "Crop rotation guide", "url": "https://example.com/crop-rotation"}],
+    )
     assert document.filename == "Crop-rotation.pdf"
     assert document.payload.startswith(b"%PDF")
+    reader = PdfReader(io.BytesIO(document.payload))
+    assert len(reader.pages) == 1
+    text = reader.pages[0].extract_text()
+    assert "EU-FarmBook" in text
+    assert "Generated" in text
+    assert "Sources" in text
+    assert "Crop rotation guide" in text
+    assert "Page 1" in text
     assert len(PdfReader(io.BytesIO(document.payload)).pages) == 1
 
 
@@ -56,3 +68,8 @@ def test_generate_pptx():
 def test_filename_is_sanitized():
     document = generate_document("../../Unsafe title!", "Body", "csv")
     assert document.filename == "Unsafe-title.csv"
+
+
+def test_unicode_filename_is_preserved():
+    document = generate_document("Précision agricole", "Body", "pdf")
+    assert document.filename == "Précision-agricole.pdf"
