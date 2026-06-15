@@ -69,6 +69,10 @@ def build_stream_payload(
     """Build payload for streaming generation."""
     payload = build_gen_payload(prompt, temperature, max_tokens, model, messages=messages)
     payload["stream"] = True
+    # Ask the OpenAI-compatible vLLM server to append a final chunk carrying real
+    # token usage (prompt/completion/total). That chunk has an empty `choices`
+    # list, so it does not affect the token streaming loop in `stream_generate`.
+    payload["stream_options"] = {"include_usage": True}
     return payload
 
 
@@ -208,6 +212,7 @@ async def stream_generate(
                 
                 # vLLM/OpenAI SSE format: data: {...}
                 token_count = 0
+                usage = None
                 async for line in r.aiter_lines():
                     if not line or not line.startswith("data: "):
                         continue
@@ -225,20 +230,27 @@ async def stream_generate(
                         logger.warning(f"Failed to parse SSE data: {e}, data: {data_str[:100]}")
                         continue
                     
+                    # With stream_options.include_usage, vLLM appends a trailing
+                    # chunk whose `choices` is empty and which carries real token
+                    # usage. Keep the latest non-null usage we see.
+                    if data.get("usage"):
+                        usage = data["usage"]
+
                     # Extract delta content from OpenAI streaming format
                     if "choices" in data and len(data["choices"]) > 0:
                         delta = data["choices"][0].get("delta", {})
                         content = delta.get("content", "")
-                        
+
                         if content:
                             token_count += 1
                             yield {"response": content}
-                
+
                 # Yield completion marker with stats (similar to Ollama format)
                 yield {
                     "done": True,
                     "done_reason": "stop",
                     "response": "",
+                    "usage": usage,
                 }
     except httpx.ConnectError as e:
         logger.error(f"Cannot connect to vLLM at {url}: {e}")

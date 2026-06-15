@@ -1155,6 +1155,7 @@ async def ask_stream(
         try:
             ctx = initial_llm_ctx
             answer_chunks: List[str] = []
+            llm_usage = None
 
             # vLLM streams the whole answer in one pass; there is no Ollama-style
             # "context" continuation. If we ever need to handle done_reason="length"
@@ -1175,6 +1176,7 @@ async def ask_stream(
                     ctx = obj["context"]
 
                 if obj.get("done"):
+                    llm_usage = obj.get("usage") or llm_usage
                     stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
                     async for x in emit("stats", stats):
                         yield x
@@ -1264,7 +1266,8 @@ async def ask_stream(
             "total_ms": total_ms,
             "search_ms": search_ms,
             "context_ms": context_ms,
-            "llm_ms": llm_ms
+            "llm_ms": llm_ms,
+            "usage": llm_usage,
         }):
             yield x
 
