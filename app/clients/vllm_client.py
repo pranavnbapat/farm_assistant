@@ -68,6 +68,16 @@ def _anthropic_max_tokens(max_tokens: int) -> int:
     return getattr(S, "ANTHROPIC_MAX_TOKENS", 1024) or 1024
 
 
+def _anthropic_model(model: str | None) -> str:
+    # The pipeline passes its configured vLLM/OpenAI model name (e.g.
+    # "qwen3-30b-a3b-awq") into generation calls; that is meaningless to the
+    # Anthropic API and 404s. Honor an explicit claude-* override, otherwise
+    # always use the instance's ANTHROPIC_MODEL.
+    if model and model.lower().startswith("claude"):
+        return model
+    return S.ANTHROPIC_MODEL
+
+
 def _split_system_and_messages(
     prompt: str,
     messages: Optional[List[Dict[str, str]]],
@@ -106,7 +116,7 @@ async def _anthropic_generate_once(
 ) -> str:
     system_text, chat = _split_system_and_messages(prompt, messages)
     kwargs: Dict[str, Any] = {
-        "model": model or S.ANTHROPIC_MODEL,
+        "model": _anthropic_model(model),
         "max_tokens": _anthropic_max_tokens(max_tokens),
         "temperature": temperature,
         "messages": chat,
@@ -129,7 +139,7 @@ async def _anthropic_stream_generate(
 ) -> AsyncGenerator[Dict[str, Any], None]:
     system_text, chat = _split_system_and_messages(prompt, messages)
     kwargs: Dict[str, Any] = {
-        "model": model or S.ANTHROPIC_MODEL,
+        "model": _anthropic_model(model),
         "max_tokens": _anthropic_max_tokens(max_tokens),
         "temperature": temperature,
         "messages": chat,
@@ -160,6 +170,19 @@ async def _anthropic_stream_generate(
         }
 
 
+def _is_gpt5_style(model: str | None) -> bool:
+    """
+    OpenAI's GPT-5 family on /v1/chat/completions rejects `max_tokens`
+    (requires `max_completion_tokens`) and only accepts the default
+    `temperature`/`top_p` (custom values 400). Detect by model name, or force
+    via OPENAI_GPT5_PARAM_STYLE for compatible deployments.
+    """
+    if getattr(S, "OPENAI_GPT5_PARAM_STYLE", False):
+        return True
+    name = (model or S.VLLM_MODEL or "").lower()
+    return name.startswith("gpt-5")
+
+
 def build_gen_payload(
     prompt: str,
     temperature: float,
@@ -171,12 +194,19 @@ def build_gen_payload(
     payload: Dict[str, Any] = {
         "model": model or S.VLLM_MODEL,
         "messages": messages if messages is not None else _wrap_prompt_as_messages(prompt),
-        "temperature": temperature,
-        "top_p": 0.9,
     }
-    # Only add max_tokens if it's positive (vLLM default is auto)
-    if max_tokens > 0:
-        payload["max_tokens"] = max_tokens
+
+    if _is_gpt5_style(model):
+        # GPT-5 family: no temperature/top_p, and the token cap is named differently.
+        if max_tokens > 0:
+            payload["max_completion_tokens"] = max_tokens
+    else:
+        payload["temperature"] = temperature
+        payload["top_p"] = 0.9
+        # Only add max_tokens if it's positive (vLLM default is auto)
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+
     return payload
 
 
@@ -337,8 +367,18 @@ async def stream_generate(
                 json=payload,
             ) as r:
                 logger.info(f"vLLM response status: {r.status_code}")
-                r.raise_for_status()
-                
+                if r.status_code >= 400:
+                    # Read the error body while the stream is still open, then
+                    # surface the real status/body. Accessing .text on an unread
+                    # streaming response would raise httpx.ResponseNotRead and
+                    # mask the actual upstream error (e.g. an OpenAI 400).
+                    await r.aread()
+                    detail = r.text
+                    logger.error(f"vLLM HTTP error {r.status_code}: {detail[:500]}")
+                    raise RuntimeError(
+                        f"Upstream LLM returned HTTP {r.status_code}: {detail[:300]}"
+                    )
+
                 # vLLM/OpenAI SSE format: data: {...}
                 token_count = 0
                 usage = None
@@ -385,7 +425,9 @@ async def stream_generate(
         logger.error(f"Cannot connect to vLLM at {url}: {e}")
         raise
     except httpx.HTTPStatusError as e:
-        logger.error(f"vLLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
+        # Defensive: the status check above already surfaces error bodies; this
+        # only fires if a future code path reintroduces raise_for_status.
+        logger.error(f"vLLM HTTP error {e.response.status_code}")
         raise
     except Exception as e:
         logger.error(f"Unexpected error in vLLM streaming: {e}")

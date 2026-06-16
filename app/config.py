@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = "claude-haiku-4-5"
     ANTHROPIC_MAX_TOKENS: int = 1024
 
+    # Force OpenAI GPT-5 param style (max_completion_tokens, no temperature/top_p).
+    # Auto-detected for models named "gpt-5*"; set true to force it otherwise.
+    OPENAI_GPT5_PARAM_STYLE: bool = False
+
     # pydantic v2 config
     model_config = SettingsConfigDict(
         env_file=".env",

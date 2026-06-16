@@ -594,6 +594,35 @@ async def api_store_comparison_result(request: Request):
     )
 
 
+@app.get("/chatbot/api/experiments/arena/variants", tags=["Chats"], summary="Arena variant visibility flags + admin status")
+async def api_get_arena_variants(request: Request, experiment_id: Optional[str] = None):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/arena/variants/"
+    params: dict[str, Any] = {}
+    if experiment_id:
+        params["experiment_id"] = experiment_id
+    return await _proxy_json_request(
+        "GET",
+        url,
+        headers={"Authorization": request.headers.get("Authorization", "")},
+        params=params,
+    )
+
+
+@app.post("/chatbot/api/experiments/arena/variants/toggle", tags=["Chats"], summary="Enable/disable an arena variant (superuser only)")
+async def api_toggle_arena_variant(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/arena/variants/toggle/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers=_chat_backend_headers(request),
+        json_body=await request.json(),
+    )
+
+
 @app.get("/chatbot/api/experiments/comparisons", tags=["Chats"], summary="List stored head-to-head comparison runs")
 async def api_get_comparison_runs(
     request: Request,
