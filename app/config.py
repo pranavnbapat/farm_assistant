@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     RETRIEVAL_CANDIDATE_K: int = 10
     RETRIEVAL_MIN_SCORE: float = 1.0
 
+    # --- LLM provider routing (additive) ---
+    # "vllm" (default) keeps the existing OpenAI-compatible /v1/chat/completions
+    # path unchanged — used by Qwen3, EuroLLM and the OpenAI API instance.
+    # "anthropic" routes generation through the Anthropic Messages API instead.
+    LLM_PROVIDER: str = Field("vllm")
+
+    # --- Anthropic (only read when LLM_PROVIDER=anthropic) ---
+    ANTHROPIC_API_KEY: str | None = None
+    ANTHROPIC_MODEL: str = "claude-haiku-4-5"
+    ANTHROPIC_MAX_TOKENS: int = 1024
+
     # pydantic v2 config
     model_config = SettingsConfigDict(
         env_file=".env",

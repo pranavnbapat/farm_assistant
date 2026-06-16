@@ -5,6 +5,7 @@ import httpx
 import json
 import logging
 
+from functools import lru_cache
 from typing import Dict, Any, AsyncGenerator, Optional, List
 
 from app.config import get_settings
@@ -37,6 +38,126 @@ def _wrap_prompt_as_messages(prompt: str) -> List[Dict[str, str]]:
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": prompt},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Anthropic provider (additive, opt-in via LLM_PROVIDER=anthropic).
+#
+# Everything below only runs when the instance is explicitly configured for
+# Anthropic. The default "vllm" path (Qwen3 / EuroLLM / OpenAI-compatible) never
+# touches this code, never imports the `anthropic` SDK, and is unchanged.
+# ---------------------------------------------------------------------------
+
+def _provider() -> str:
+    return (getattr(S, "LLM_PROVIDER", "") or "vllm").strip().lower()
+
+
+@lru_cache(maxsize=1)
+def _anthropic_client():
+    # Lazy import: only the Anthropic instance ever imports the SDK, so the
+    # vLLM/Qwen instance neither needs the package installed nor pays any cost.
+    from anthropic import AsyncAnthropic
+    return AsyncAnthropic(api_key=S.ANTHROPIC_API_KEY)
+
+
+def _anthropic_max_tokens(max_tokens: int) -> int:
+    # The Messages API requires a positive max_tokens. The vLLM path uses -1 to
+    # mean "auto", so fall back to a configured default in that case.
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        return max_tokens
+    return getattr(S, "ANTHROPIC_MAX_TOKENS", 1024) or 1024
+
+
+def _split_system_and_messages(
+    prompt: str,
+    messages: Optional[List[Dict[str, str]]],
+) -> tuple[Optional[str], List[Dict[str, str]]]:
+    """
+    Convert the OpenAI-style message list (which carries the system prompt as a
+    leading {"role": "system"} entry) into Anthropic's shape: a top-level
+    `system` string plus a user/assistant-only `messages` list.
+    """
+    source = messages if messages is not None else _wrap_prompt_as_messages(prompt)
+
+    system_parts: List[str] = []
+    chat: List[Dict[str, str]] = []
+    for m in source:
+        role = m.get("role")
+        content = m.get("content", "")
+        if role == "system":
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content)
+            continue
+        chat.append({"role": role, "content": content})
+
+    if not chat:
+        chat = [{"role": "user", "content": prompt or ""}]
+
+    system_text = "\n\n".join(system_parts) if system_parts else None
+    return system_text, chat
+
+
+async def _anthropic_generate_once(
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+    messages: Optional[List[Dict[str, str]]],
+) -> str:
+    system_text, chat = _split_system_and_messages(prompt, messages)
+    kwargs: Dict[str, Any] = {
+        "model": model or S.ANTHROPIC_MODEL,
+        "max_tokens": _anthropic_max_tokens(max_tokens),
+        "temperature": temperature,
+        "messages": chat,
+    }
+    if system_text:
+        kwargs["system"] = system_text
+
+    resp = await _anthropic_client().messages.create(**kwargs)
+    return "".join(
+        block.text for block in resp.content if getattr(block, "type", None) == "text"
+    ).strip()
+
+
+async def _anthropic_stream_generate(
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+    model: str | None,
+    messages: Optional[List[Dict[str, str]]],
+) -> AsyncGenerator[Dict[str, Any], None]:
+    system_text, chat = _split_system_and_messages(prompt, messages)
+    kwargs: Dict[str, Any] = {
+        "model": model or S.ANTHROPIC_MODEL,
+        "max_tokens": _anthropic_max_tokens(max_tokens),
+        "temperature": temperature,
+        "messages": chat,
+    }
+    if system_text:
+        kwargs["system"] = system_text
+
+    async with _anthropic_client().messages.stream(**kwargs) as stream:
+        async for text in stream.text_stream:
+            if text:
+                yield {"response": text}
+
+        final = await stream.get_final_message()
+        usage = getattr(final, "usage", None)
+        in_tokens = getattr(usage, "input_tokens", None) if usage else None
+        out_tokens = getattr(usage, "output_tokens", None) if usage else None
+        # Map to the same OpenAI-style usage keys the vLLM path emits, so
+        # downstream consumers are provider-agnostic.
+        yield {
+            "done": True,
+            "done_reason": "stop",
+            "response": "",
+            "usage": {
+                "prompt_tokens": in_tokens,
+                "completion_tokens": out_tokens,
+                "total_tokens": (in_tokens or 0) + (out_tokens or 0),
+            },
+        }
 
 
 def build_gen_payload(
@@ -89,6 +210,9 @@ async def generate_once(
     If `messages` is provided, it is used as the OpenAI chat-completions array
     verbatim and `prompt` is ignored.
     """
+    if _provider() == "anthropic":
+        return await _anthropic_generate_once(prompt, temperature, max_tokens, model, messages)
+
     timeout = httpx.Timeout(connect=30.0, read=300.0, write=1800.0, pool=None)
     url = f"{S.VLLM_URL}/v1/chat/completions"
 
@@ -186,6 +310,11 @@ async def stream_generate(
     verbatim and `prompt` is ignored.
     Yields dicts with 'response' for tokens and 'done' when complete.
     """
+    if _provider() == "anthropic":
+        async for chunk in _anthropic_stream_generate(prompt, temperature, max_tokens, model, messages):
+            yield chunk
+        return
+
     timeout = httpx.Timeout(connect=30.0, read=3600.0, write=300.0, pool=None)
     url = f"{S.VLLM_URL}/v1/chat/completions"
 

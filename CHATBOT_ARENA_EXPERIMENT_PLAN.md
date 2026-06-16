@@ -21,13 +21,20 @@ The experiment should measure answer quality, but production selection must also
 
 ### 2.1 Model families
 
-Use three model families:
+Use five model families, grouped by licence:
 
-1. OpenAI/ChatGPT
+Open-weight (self-hosted via vLLM):
+
+1. Qwen
 2. Mistral
-3. Qwen
+3. EuroLLM
 
-Claude is not included. We will use OpenAI as the single proprietary model family.
+Proprietary (hosted API):
+
+4. OpenAI/ChatGPT
+5. Anthropic/Claude
+
+There are two proprietary model families, OpenAI and Anthropic, not one. Both are run through the same `farm_assistant` RAG pipeline as the open-weight families — only the final generation call targets the provider API, so retrieval, prompts, citation rules, and output limits stay equivalent across all families. In the arena they appear as blind cards, indistinguishable from every other configuration.
 
 The exact model identifiers must be agreed and frozen before the experiment. For example, writing only "GPT" or "Qwen" is not sufficient because providers can release or update models during the study.
 
@@ -93,15 +100,21 @@ Possible metadata includes:
 
 The exact metadata fields and ranking rules must be agreed before implementation. This method must produce meaningfully different retrieval behaviour. It should not be only a new label for the existing retriever.
 
-### 2.3 The 3 x 3 matrix
+### 2.3 The configuration set (1 × 5)
 
-| RAG method | OpenAI | Mistral | Qwen |
-|---|---:|---:|---:|
-| Standard routed RAG | Configuration 1 | Configuration 2 | Configuration 3 |
-| Corrective RAG with reflection | Configuration 4 | Configuration 5 | Configuration 6 |
-| Metadata-aware corrective RAG with reflection | Configuration 7 | Configuration 8 | Configuration 9 |
+The current experiment fixes a **single RAG method** — Standard routed RAG (Method 1), i.e. the `farm_assistant` pipeline — and varies **only the model family**. That gives five configurations:
 
-All nine configurations must use the same knowledge-base snapshot and, as far as possible, equivalent prompts, citation rules, output limits, and safety instructions.
+| RAG method | Qwen3 | Mistral | EuroLLM | OpenAI | Anthropic |
+|---|---:|---:|---:|---:|---:|
+| Standard routed RAG | Configuration 1 | Configuration 2 | Configuration 3 | Configuration 4 | Configuration 5 |
+
+- Configuration 1 — `farm_assistant` + Qwen3 (self-hosted vLLM)
+- Configuration 2 — Mistral (existing external deployment)
+- Configuration 3 — `farm_assistant` + EuroLLM (self-hosted vLLM)
+- Configuration 4 — `farm_assistant` + OpenAI API
+- Configuration 5 — `farm_assistant` + Anthropic API
+
+Methods 2 (corrective RAG) and 3 (metadata-aware corrective RAG), described above, are out of scope for this run and kept only as future options. All five configurations must use the same knowledge-base snapshot and, as far as possible, equivalent prompts, citation rules, output limits, and safety instructions.
 
 ## 3. Recommended Experiment Structure
 
