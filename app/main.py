@@ -568,6 +568,19 @@ async def api_create_comparison_run(request: Request):
     )
 
 
+@app.post("/chatbot/api/experiments/comparisons/benchmark", tags=["Chats"], summary="Attach hidden benchmark answers to a comparison run")
+async def api_store_comparison_benchmark(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/comparisons/benchmark/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers=_chat_backend_headers(request),
+        json_body=await request.json(),
+    )
+
+
 @app.post("/chatbot/api/experiments/comparisons/result", tags=["Chats"], summary="Persist evaluator selections for a comparison run")
 async def api_store_comparison_result(request: Request):
     if not S.CHAT_BACKEND_URL:
