@@ -10,12 +10,13 @@ log/
 logs/
 
 # Editors / IDE
-.vscode/
-.idea/
 *.iml
 
+# Dot-directories
+.*/
+!.github/
+
 # Environments
-.venv/
 venv/
 ENV/
 env/
@@ -40,3 +41,9 @@ output/
 
 temp_images/
 testing/
+
+# Markdown docs
+*.md
+!README.md
+!docs/
+!docs/**/*.md

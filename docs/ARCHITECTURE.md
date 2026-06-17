@@ -214,7 +214,7 @@ Notable currently documented endpoints include:
 
 The UI page routes `/`, `/chat`, and `/c/{session_id}` are intentionally hidden from OpenAPI.
 
-See [API_ENDPOINT_SURFACE.md](./API_ENDPOINT_SURFACE.md) for the endpoint inventory.
+See [API_ENDPOINT_SURFACE.md](API_ENDPOINT_SURFACE.md) for the endpoint inventory.
 
 ## State and Persistence Model
 
@@ -323,4 +323,4 @@ User personalization is additive rather than mandatory. The assistant can still 
 - relevance of examples
 - continuity across ongoing user-specific discussions
 
-See [USER_DATA_CAPTURE_AND_USAGE.md](./USER_DATA_CAPTURE_AND_USAGE.md) for the data inventory.
+See [USER_DATA_CAPTURE_AND_USAGE.md](USER_DATA_CAPTURE_AND_USAGE.md) for the data inventory.

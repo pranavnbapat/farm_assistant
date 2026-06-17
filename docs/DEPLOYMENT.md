@@ -172,3 +172,44 @@ run as blind, shuffled A/B/C cards; `weight` is unused in the arena.
 - **Pin reproducibility:** `anthropic==0.109.2` is pinned. Freeze the exact
   OpenAI / EuroLLM / Claude model identifiers before the experiment starts, per
   the experiment plan.
+
+## Provider gotchas (learned in production)
+
+- **OpenAI GPT-5 family** (`gpt-5*`, incl. `gpt-5.4-mini`): the Chat Completions
+  API rejects `max_tokens` (needs `max_completion_tokens`) and custom
+  `temperature`/`top_p` (400). `build_gen_payload` auto-detects `gpt-5*` and
+  switches param style; force it elsewhere with `OPENAI_GPT5_PARAM_STYLE=true`.
+- **Anthropic model name**: the pipeline passes its configured vLLM model name
+  (e.g. `qwen3-30b-a3b-awq`) into generation calls; Anthropic 404s on it. The
+  adapter ignores any non-`claude-*` model and uses `ANTHROPIC_MODEL`.
+- **Streaming error visibility**: `stream_generate` reads the error body while
+  the stream is open and raises `Upstream LLM returned HTTP <code>: <body>`.
+  Before this fix, a non-200 mid-stream surfaced only as the misleading
+  "Attempted to access streaming response content, without having called
+  `read()`." If you see that message, you're on an old image.
+
+## Arena card visibility switch (admin)
+
+A **Django superuser** can show/hide the closed-source cards (OpenAI, Anthropic)
+for everyone, at runtime, from the arena page. State persists on
+`ChatExperimentVariant.enabled` (no DB migration).
+
+**Spans three repos:**
+
+| Repo | Change |
+|---|---|
+| `django_euf_admin` | Views `arena_variants` (GET, flags + `is_admin`) and `arena_variant_toggle` (POST, **superuser-only**, 403 otherwise) in `euf/views/fastapi/UserChatV.py`; exported in `__init__.py`; URLs `chat/experiments/arena/variants/` and `.../toggle/`. |
+| `farm_assistant` | Proxy routes `/chatbot/api/experiments/arena/variants` (GET) and `.../variants/toggle` (POST) in `app/main.py`. |
+| `eu-farmbook-frontend` | `getArenaVariantFlags`/`applyArenaVisibility` filter the lineup in the compare run + stream routes (graceful fallback: visible on error); `/api/farm-assistant/arena/settings` proxy; admin panel in `FarmAssistantCompareShell.tsx`. |
+
+**Authorization:** enforced server-side by `is_superuser` on the toggle endpoint.
+The frontend only hides the panel for non-admins; it is not the security gate.
+
+**Deploy order:** `django_euf_admin` (no migration) → `farm_assistant`
+(build/push/pull) → `eu-farmbook-frontend` (commit/redeploy).
+
+**Prerequisite:** the operator's account must be `is_superuser=True` in
+`django_euf_admin`, or the panel won't appear and toggles return 403.
+
+**Behaviour:** toggling a card off drops it from every user's shuffled lineup on
+the next question; the other cards (Qwen/EuroLLM/Mistral) are never affected.
