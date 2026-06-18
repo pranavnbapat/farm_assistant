@@ -74,14 +74,22 @@ class MessageFeedbackIn(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ExportConversationMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class ExportIntentIn(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     previous_assistant_message: Optional[str] = Field(default=None, max_length=8000)
+    conversation_messages: List[ExportConversationMessage] = Field(default_factory=list, max_length=100)
+    previous_export_scope: Optional[Literal["previous_answer", "conversation"]] = None
 
 
 class ExportIntentOut(BaseModel):
     intent: Literal["normal_chat", "export_previous", "generate_export"] = "normal_chat"
     format: Optional[Literal["pdf", "docx", "csv", "xlsx", "pptx"]] = None
+    scope: Optional[Literal["previous_answer", "conversation"]] = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     meta: Dict[str, Any] = Field(default_factory=dict)
 

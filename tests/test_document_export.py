@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 from pypdf import PdfReader
 from pptx import Presentation
 
+from app.routers.files import DocumentExportIn, _export_content_from_body
 from app.services.document_export_service import generate_document
 
 CONTENT = """## Crop comparison
@@ -73,3 +74,45 @@ def test_filename_is_sanitized():
 def test_unicode_filename_is_preserved():
     document = generate_document("Précision agricole", "Body", "pdf")
     assert document.filename == "Précision-agricole.pdf"
+
+
+
+def test_conversation_export_content_uses_transcript_rows_for_xlsx():
+    body = DocumentExportIn(
+        title="Conversation",
+        format="xlsx",
+        scope="conversation",
+        messages=[
+            {"role": "user", "content": "Who are you?"},
+            {"role": "assistant", "content": "I am Farm Assistant."},
+        ],
+    )
+    content = _export_content_from_body(body)
+    document = generate_document(body.title, content, body.format)
+    workbook = load_workbook(io.BytesIO(document.payload))
+    sheet = workbook.active
+
+    assert sheet["A1"].value == "Turn"
+    assert sheet["B1"].value == "Speaker"
+    assert sheet["C1"].value == "Message"
+    assert sheet["B2"].value == "User"
+    assert sheet["C3"].value == "I am Farm Assistant."
+
+
+def test_conversation_export_content_uses_readable_transcript_for_pdf():
+    body = DocumentExportIn(
+        title="Conversation",
+        format="pdf",
+        scope="conversation",
+        messages=[
+            {"role": "user", "content": "Can anyone upload to EUF?"},
+            {"role": "assistant", "content": "I cannot confirm that."},
+        ],
+    )
+
+    content = _export_content_from_body(body)
+
+    assert "## Conversation transcript" in content
+    assert "### 1. User" in content
+    assert "### 2. Farm Assistant" in content
+    assert "I cannot confirm that." in content

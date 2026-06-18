@@ -10,16 +10,15 @@ log/
 logs/
 
 # Editors / IDE
-.vscode/
-.idea/
 *.iml
 
+# Dot-directories
+.*/
+
 # VCS
-.git
 .gitignore
 
 # Environments
-.venv/
 venv/
 ENV/
 env/
@@ -46,3 +45,7 @@ output/
 *.onnx
 
 testing/
+
+# Markdown docs
+*.md
+docs/**/*.md

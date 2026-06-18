@@ -21,11 +21,50 @@ class DocumentSourceIn(BaseModel):
     license: Optional[str] = Field(default=None, max_length=200)
 
 
+class DocumentExportMessageIn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+
 class DocumentExportIn(BaseModel):
     title: str = Field(default="Farm Assistant response", max_length=200)
-    content: str = Field(min_length=1, max_length=100_000)
+    content: str = Field(default="", max_length=100_000)
     format: Literal["pdf", "docx", "csv", "xlsx", "pptx"]
     sources: list[DocumentSourceIn] = Field(default_factory=list, max_length=50)
+    scope: Optional[Literal["previous_answer", "conversation"]] = None
+    messages: list[DocumentExportMessageIn] = Field(default_factory=list, max_length=100)
+
+
+
+def _markdown_table_cell(value: str) -> str:
+    return (value or "").replace("|", r"\|").replace("\r\n", "<br>").replace("\n", "<br>").strip()
+
+
+def _format_transcript_export_content(messages: list[DocumentExportMessageIn], export_format: str) -> str:
+    cleaned = [m for m in messages if (m.content or "").strip()]
+    if not cleaned:
+        return ""
+
+    if export_format in {"csv", "xlsx"}:
+        rows = ["| Turn | Speaker | Message |", "| --- | --- | --- |"]
+        for index, message in enumerate(cleaned, start=1):
+            speaker = "User" if message.role == "user" else "Farm Assistant"
+            rows.append(
+                f"| {index} | {_markdown_table_cell(speaker)} | {_markdown_table_cell(message.content)} |"
+            )
+        return "\n".join(rows)
+
+    parts = ["## Conversation transcript"]
+    for index, message in enumerate(cleaned, start=1):
+        speaker = "User" if message.role == "user" else "Farm Assistant"
+        parts.append(f"### {index}. {speaker}\n\n{message.content.strip()}")
+    return "\n\n".join(parts)
+
+
+def _export_content_from_body(body: DocumentExportIn) -> str:
+    if body.scope == "conversation" and body.messages:
+        return _format_transcript_export_content(body.messages, body.format)
+    return (body.content or "").strip()
 
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
@@ -56,12 +95,17 @@ async def export_document(request: Request, body: DocumentExportIn):
         raise HTTPException(status_code=401, detail="Authentication required.")
 
     try:
+        export_content = _export_content_from_body(body)
+        if not export_content:
+            raise HTTPException(status_code=400, detail="Export content is required.")
         document = generate_document(
             title=body.title.strip() or "Farm Assistant response",
-            content=body.content,
+            content=export_content,
             export_format=body.format,
             sources=[source.model_dump(exclude_none=True) for source in body.sources],
         )
+    except HTTPException:
+        raise
     except ImportError as error:
         raise HTTPException(status_code=503, detail=f"{body.format.upper()} export is not installed.") from error
     except Exception as error:

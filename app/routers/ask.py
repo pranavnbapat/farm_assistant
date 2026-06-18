@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from typing import Optional, List, Literal
+from typing import Optional, List
 
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
@@ -47,6 +47,7 @@ from app.services.pdf_service import (
 )
 from app.services.prompt_service import (
     build_capabilities_messages,
+    build_platform_operation_messages,
     build_clarification_messages,
     build_general_knowledge_messages,
     build_messages,
@@ -56,6 +57,13 @@ from app.services.prompt_service import (
     build_summary_prompt,
     build_title_prompt,
 )
+from app.services.scope_contract import (
+    ROUTER_MODE_PROMPT_TEXT,
+    ScopeRouteDecision,
+    TurnMode,
+    decision_for_mode,
+    file_analysis_decision,
+)
 from app.services.search_service import build_search_payload, collect_os_items
 from app.utils.language_utils import detect_language, detect_language_confident, get_language_name
 from app.services.user_profile_service import UserProfileService
@@ -64,17 +72,6 @@ from app.schemas import AskIn, ChatMessageStreamIn, ExportIntentIn, ExportIntent
 logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
 router = APIRouter()
-
-TurnMode = Literal[
-    "clarification_only",
-    "off_topic",
-    "history_only",
-    "conversation_only",
-    "assistant_capabilities",
-    "general_knowledge",
-    "normal",
-]
-
 
 def _get_answer_language(question: str) -> str:
     """Resolve a deterministic language name from the latest message only."""
@@ -111,6 +108,53 @@ async def _resolve_answer_language(question: str) -> str:
 
     return _get_answer_language(question)
 
+
+def _platform_operation_static_answer(answer_language: str) -> str:
+    answers = {
+        "english": (
+            "I cannot confirm that from the available EU-FarmBook material. "
+            "I should not assume that public upload access exists. "
+            "In this chat, you can upload files for analysis, but uploading or publishing materials "
+            "to EU-FarmBook itself would need to be confirmed through the official EU-FarmBook team or documentation."
+        ),
+        "dutch": (
+            "Ik kan dat niet bevestigen op basis van het beschikbare EU-FarmBook-materiaal. "
+            "Ik mag niet aannemen dat publieke uploadtoegang bestaat. "
+            "In deze chat kun je bestanden uploaden voor analyse, maar materiaal uploaden of publiceren "
+            "naar EU-FarmBook zelf moet worden bevestigd via het officiele EU-FarmBook-team of de documentatie."
+        ),
+        "french": (
+            "Je ne peux pas le confirmer a partir des documents EU-FarmBook disponibles. "
+            "Je ne dois pas supposer qu un acces public au televersement existe. "
+            "Dans cette conversation, vous pouvez televerser des fichiers pour analyse, mais le televersement "
+            "ou la publication de contenus sur EU-FarmBook doit etre confirme par l equipe ou la documentation officielle d EU-FarmBook."
+        ),
+        "german": (
+            "Ich kann das anhand des verfuegbaren EU-FarmBook-Materials nicht bestaetigen. "
+            "Ich sollte nicht annehmen, dass ein oeffentlicher Upload-Zugang existiert. "
+            "In diesem Chat koennen Sie Dateien zur Analyse hochladen, aber das Hochladen oder Veroeffentlichen "
+            "von Materialien in EU-FarmBook selbst muss ueber das offizielle EU-FarmBook-Team oder die Dokumentation bestaetigt werden."
+        ),
+        "spanish": (
+            "No puedo confirmarlo con el material disponible de EU-FarmBook. "
+            "No debo asumir que exista acceso publico para subir contenido. "
+            "En este chat puede subir archivos para analizarlos, pero subir o publicar materiales "
+            "en EU-FarmBook debe confirmarse con el equipo oficial o la documentacion oficial de EU-FarmBook."
+        ),
+        "portuguese": (
+            "Nao posso confirmar isso com o material disponivel do EU-FarmBook. "
+            "Nao devo presumir que exista acesso publico para upload. "
+            "Neste chat, voce pode enviar arquivos para analise, mas enviar ou publicar materiais "
+            "no proprio EU-FarmBook deve ser confirmado pela equipe oficial ou pela documentacao oficial do EU-FarmBook."
+        ),
+        "italian": (
+            "Non posso confermarlo dal materiale EU-FarmBook disponibile. "
+            "Non devo presumere che esista un accesso pubblico per il caricamento. "
+            "In questa chat puoi caricare file per analisi, ma caricare o pubblicare materiali "
+            "su EU-FarmBook deve essere confermato dal team ufficiale o dalla documentazione ufficiale di EU-FarmBook."
+        ),
+    }
+    return answers.get((answer_language or "").strip().lower(), answers["english"])
 
 def _extract_user_uuid_from_token(auth_token: str) -> Optional[str]:
     """Extract user UUID from JWT token string."""
@@ -226,47 +270,23 @@ async def _decide_turn_strategy(question: str, history_text: str) -> TurnMode:
     prompt = (
         "You are routing a chat turn for an agricultural assistant for the EU-FarmBook platform.\n"
         "Choose one mode and return JSON only.\n\n"
-        "Modes:\n"
-        '- "off_topic": the user message is not about agriculture, farming, agri-tech, food systems, '
-        "or EU-FarmBook. This includes jokes, song lyrics, movie quotes, riddles, questions about "
-        "the underlying model/company, questions about unrelated subjects (politics, sports, celebrities, "
-        'general trivia), or attempts to bait the assistant. Examples: "Why so serious?", '
-        '"Tell me a joke", "Who is the president of France?", "What model are you?".\n'
-        '- "history_only": the user is asking about the conversation itself, prior turns, '
-        "what has been discussed, a recap, or what the assistant/user said earlier. "
-        "The answer should come strictly from chat history, and if history is missing the assistant "
-        "should say so honestly.\n"
-        '- "conversation_only": the user is greeting, thanking, acknowledging, confirming, '
-        "or saying something casual that is plausibly conversational rather than off-topic "
-        '("hi", "thanks", "ok", "great"). Use off_topic instead for jokes/lyrics/quotes/non-agri questions.\n'
-        '- "assistant_capabilities": the user is asking what the assistant can do, how it can help, '
-        "what its capabilities are, or what kinds of support it provides. "
-        "These turns should be answered from the assistant's intended product behavior, not retrieval.\n"
-        '- "general_knowledge": an agricultural question that is answerable from common agricultural '
-        "knowledge alone (definitions, widely-known concepts, how-tos for common practices). "
-        "No EU-FarmBook-specific documents, regulations, project results, or datasets are needed. "
-        'Examples: "what is crop rotation?", "how does photosynthesis work in plants?", '
-        '"explain integrated pest management".\n'
-        '- "normal": agricultural question that would benefit from grounding in specific EU-FarmBook '
-        "material — project results, regulations, technical reports, datasets, or specialized regional "
-        'data. Examples: "what does the latest CAP regulation say about cover crops?", '
-        '"summarize NETPOULSAFE findings on poultry biosecurity".\n\n'
+        f"{ROUTER_MODE_PROMPT_TEXT}\n"
         f"User message:\n{question}\n\n"
         "Previous Conversation:\n"
         f"{history_text or 'No earlier conversation is available.'}\n\n"
         'Return exactly: {"mode":"off_topic"} or {"mode":"history_only"} or {"mode":"conversation_only"} or '
-        '{"mode":"assistant_capabilities"} or {"mode":"general_knowledge"} or {"mode":"normal"}'
+        '{"mode":"assistant_capabilities"} or {"mode":"platform_operation"} or {"mode":"general_knowledge"} or {"mode":"normal"}'
     )
     try:
         raw = await asyncio.wait_for(
-            generate_once(prompt, temperature=0.0, max_tokens=14),
+            generate_once(prompt, temperature=0.0, max_tokens=20),
             timeout=1.5,
         )
         match = _re.search(r"\{.*?\}", raw or "", flags=_re.DOTALL)
         if match:
             data = json.loads(match.group(0))
             mode = (data.get("mode") or "").strip().lower()
-            if mode in {"off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge", "normal"}:
+            if mode in {"off_topic", "history_only", "conversation_only", "assistant_capabilities", "platform_operation", "general_knowledge", "normal"}:
                 return mode
     except Exception:
         pass
@@ -285,6 +305,17 @@ async def _resolve_turn_context(
     This avoids brittle affirmation heuristics and prevents accidental
     continuation from trailing fragments of the prior answer.
     """
+    if _is_affirmative_followup(question) and (last_assistant_question or followup_hint):
+        accepted_offer = (last_assistant_question or followup_hint or "").strip()
+        resolved = f"The user accepted the assistant's previous offer or question: {accepted_offer}"
+        return {
+            "resolved_user_message": resolved,
+            "assistant_instruction": (
+                f"The user answered affirmatively to this previous assistant offer or question: {accepted_offer}. "
+                "Fulfill that accepted request using only the prior conversation and any available chat context."
+            ),
+        }
+
     prompt = (
         "You are interpreting the user's latest turn for an agricultural assistant.\n"
         "Return JSON only.\n\n"
@@ -348,20 +379,47 @@ def _short_title_2_3_words(raw: str) -> str:
     return " ".join(words[:3])[:120]
 
 
+_ASSISTANT_OFFER_PATTERNS = (
+    _re.compile(r"\b(?:let me know if|tell me if)\b", _re.IGNORECASE),
+    _re.compile(r"\b(?:would you like|do you want|should i|shall i)\b", _re.IGNORECASE),
+    _re.compile(r"\bi can\b.{0,120}\b(?:provide|prepare|create|make|turn|convert|summarize|summarise|translate|format|export)\b", _re.IGNORECASE),
+)
+
+_AFFIRMATIVE_FOLLOWUP_TERMS = {
+    "yes", "yes please", "please", "sure", "sure please", "ok", "okay",
+    "okay please", "yeah", "yep", "yup", "go ahead", "do it", "please do",
+    "that would be great", "sounds good", "let's do it", "proceed",
+}
+
+
+def _is_affirmative_followup(text: str) -> bool:
+    q = (text or "").strip().lower()
+    if not q:
+        return False
+    q = _re.sub(r"[.!?]+$", "", q).strip()
+    return q in _AFFIRMATIVE_FOLLOWUP_TERMS
+
+
 def _extract_last_assistant_question(messages: list[dict]) -> str:
     for msg in reversed(messages or []):
         if (msg.get("role") or "").lower() != "assistant":
             continue
         content = (msg.get("content") or "").strip()
-        if not content or "?" not in content:
+        if not content:
             continue
-        # take last sentence-like chunk ending with '?'
+        # Take the last explicit question first.
         parts = _re.split(r"(?<=[\?\!\.])\s+", content)
         for p in reversed(parts):
             p = p.strip()
             if p.endswith("?"):
                 return p[:300]
-        return content[:300]
+        # Some assistant continuations are phrased as offers, not questions:
+        # "Let me know if you'd like...". Short affirmative replies should
+        # inherit these instead of becoming generic conversation.
+        for p in reversed(parts):
+            p = p.strip()
+            if p and any(pattern.search(p) for pattern in _ASSISTANT_OFFER_PATTERNS):
+                return p[:300]
     return ""
 
 
@@ -441,9 +499,12 @@ def _is_meaningless_prompt(text: str) -> bool:
 _AGRI_HINT_TERMS = {
     "agriculture", "agricultural", "farming", "farm", "farmer", "farmers",
     "crop", "crops", "soil", "livestock", "poultry", "cattle", "tractor",
-    "irrigation", "fertilizer", "fertiliser", "manure", "weed", "weeds",
-    "pest", "pests", "crop rotation", "agri", "food system", "greenhouse",
-    "horticulture", "aquaculture", "forestry", "eufarmbook", "eu-farmbook",
+    "machinery", "irrigation", "fertilizer", "fertiliser", "manure", "weed",
+    "weeds", "pest", "pests", "crop rotation", "agri", "agri-tech",
+    "food system", "food systems", "greenhouse", "horticulture", "aquaculture",
+    "forest", "forestry", "sustainability", "climate adaptation", "post-harvest",
+    "post harvest", "storage", "processing", "food safety", "value chain",
+    "value chains", "farm business", "eufarmbook", "eu-farmbook",
 }
 
 _CONSUMER_TECH_OFFTOPIC_TERMS = {
@@ -472,6 +533,87 @@ _GENERAL_OFFTOPIC_TERMS = {
     "germany", "united states", "usa", "election",
 }
 
+_CULINARY_INTENT_TERMS = {
+    "recipe", "recipes", "cook", "cooking", "bake", "baking",
+    "fry", "frying", "boil", "grill", "roast", "kitchen",
+    "homemade", "ingredients",
+}
+
+_CULINARY_FOOD_TERMS = {
+    "lasagna", "lasagne", "pizza", "pasta", "burger", "cake",
+    "cookie", "cookies", "bread", "soup", "salad", "sauce",
+    "sandwich", "chips", "fries", "omelette", "pancake", "pancakes",
+}
+
+_FOOD_SYSTEM_ALLOWED_TERMS = {
+    "farm", "farming", "farmer", "crop", "crops", "processing",
+    "post-harvest", "post harvest", "storage", "shelf life", "food safety",
+    "haccp", "packaging", "supply chain", "market", "business",
+    "value chain", "agri", "agriculture", "agricultural", "production",
+}
+
+
+_HISTORY_TRANSFORM_TERMS = {
+    "table", "tabular", "format", "formatted", "reformat", "rewrite",
+    "summarize", "summary", "shorten", "simplify", "translate",
+    "bullet", "bullets", "list", "compare", "organize", "structure",
+}
+
+_HISTORY_REFERENCE_TERMS = {
+    "it", "this", "that", "above", "previous", "last", "answer",
+    "response", "reply", "content", "all of this", "everything",
+}
+
+
+def _is_history_transform_query(user_q: str) -> bool:
+    q = (user_q or "").strip().lower()
+    if not q:
+        return False
+    has_transform = any(term in q for term in _HISTORY_TRANSFORM_TERMS)
+    has_reference = any(term in q for term in _HISTORY_REFERENCE_TERMS)
+    if has_transform and has_reference:
+        return True
+    return bool(_re.search(r"\b(?:give|put|make|turn|convert)\s+(?:it|this|that|the answer|the response)\b", q))
+
+
+def _is_culinary_recipe_query(user_q: str) -> bool:
+    q = (user_q or "").strip().lower()
+    if not q:
+        return False
+    if any(term in q for term in _FOOD_SYSTEM_ALLOWED_TERMS):
+        return False
+    recipe_pattern = _re.search(
+        r"\b(?:how\s+(?:do|can)\s+i|how\s+to|show\s+me\s+how\s+to)\s+(?:make|cook|bake|fry|prepare)\b",
+        q,
+    )
+    has_culinary_term = any(term in q for term in _CULINARY_INTENT_TERMS)
+    has_food_term = any(term in q for term in _CULINARY_FOOD_TERMS)
+    return bool(recipe_pattern or has_food_term or (has_culinary_term and has_food_term))
+
+_PLATFORM_OPERATION_TERMS = {
+    "upload", "uploads", "uploaded", "uploading", "publish", "publishing",
+    "submit", "submission", "submissions", "contribute", "contribution",
+    "register", "registration", "sign up", "signup", "account", "dashboard",
+    "portal", "access", "login", "log in", "import", "sync", "synchronise",
+    "synchronize", "connect", "share",
+}
+
+_PLATFORM_TARGET_TERMS = {
+    "euf", "eu-farmbook", "eufarmbook", "platform", "website", "portal",
+    "dashboard", "materials", "material", "documents", "records", "data",
+}
+
+
+def _is_platform_operation_query(user_q: str) -> bool:
+    q = (user_q or "").strip().lower()
+    if not q:
+        return False
+    if not any(term in q for term in ("euf", "eu-farmbook", "eufarmbook")):
+        return False
+    has_operation = any(term in q for term in _PLATFORM_OPERATION_TERMS)
+    has_target = any(term in q for term in _PLATFORM_TARGET_TERMS)
+    return has_operation and has_target
+
 
 def _hard_route_turn_mode(user_q: str) -> Optional[str]:
     """
@@ -484,11 +626,15 @@ def _hard_route_turn_mode(user_q: str) -> Optional[str]:
         return "clarification_only"
     if _is_meaningless_prompt(q):
         return "clarification_only"
+    if _is_platform_operation_query(q):
+        return "platform_operation"
+    if _is_culinary_recipe_query(q):
+        return "off_topic"
     if _mentions_file_or_document(q):
         return None
     has_agri_hint = any(term in q for term in _AGRI_HINT_TERMS)
     if any(term in q for term in _PROMPT_INJECTION_TERMS):
-        return None if has_agri_hint else "off_topic"
+        return "off_topic"
     if any(term in q for term in _CONSUMER_TECH_OFFTOPIC_TERMS):
         return "off_topic"
     if any(term in q for term in _GENERAL_OFFTOPIC_TERMS) and not has_agri_hint:
@@ -520,21 +666,55 @@ def _has_offtopic_signal(user_q: str) -> bool:
     return False
 
 
-async def _route_turn_mode(
+async def _route_turn_decision(
     *,
     user_q: str,
     prompt_q: str,
     history_text: str,
-) -> TurnMode:
+    has_uploaded_files: bool = False,
+) -> ScopeRouteDecision:
     """
-    Three-stage routing:
-    1. Hard deterministic guardrails for obvious cases.
-    2. Lightweight LLM classifier for ambiguous cases only.
-    3. Default to `normal` on classifier failure.
+    Route the latest turn into a structured product-scope decision.
+
+    The public/runtime API still works with `TurnMode`, but keeping intent,
+    allowance, source requirements, and scope inheritance together prevents the
+    prompt contract and router behavior from drifting apart.
     """
+    q = (user_q or "").strip()
+    if not q or _is_meaningless_prompt(q):
+        return decision_for_mode(
+            "clarification_only",
+            reason="Input is empty, punctuation-only, or underspecified.",
+        )
+
+    if has_uploaded_files and (_is_file_handoff_query(user_q) or _mentions_file_or_document(user_q)):
+        return file_analysis_decision(
+            reason="User asks about uploaded PDF/image content before broad refusal checks.",
+        )
+
     forced_mode = _hard_route_turn_mode(user_q)
     if forced_mode:
-        return forced_mode
+        return decision_for_mode(
+            forced_mode,
+            reason="Deterministic router guardrail matched.",
+        )
+
+    if history_text and _is_history_transform_query(user_q):
+        return decision_for_mode(
+            "history_only",
+            reason="User asks to transform prior conversation content and inherits its scope.",
+        )
+
+    prompt_q_lower = (prompt_q or "").lower()
+    resolved_affirmative_offer = (
+        "accepted the assistant's previous offer or question" in prompt_q_lower
+        or "answered affirmatively to this previous assistant offer or question" in prompt_q_lower
+    )
+    if history_text and _is_affirmative_followup(user_q) and resolved_affirmative_offer:
+        return decision_for_mode(
+            "history_only",
+            reason="User affirmatively accepted the previous assistant offer or question.",
+        )
 
     strategy_history = _routing_history_for_query(user_q, history_text)
     mode = await _decide_turn_strategy(prompt_q, strategy_history)
@@ -546,11 +726,30 @@ async def _route_turn_mode(
     # markers, treat it as general_knowledge so the assistant answers within
     # scope without manufacturing citations.
     if mode == "off_topic":
-        q_lower = (user_q or "").strip().lower()
+        q_lower = q.lower()
         if q_lower and any(term in q_lower for term in _AGRI_HINT_TERMS) and not _has_offtopic_signal(user_q):
-            return "general_knowledge"
+            return decision_for_mode(
+                "general_knowledge",
+                reason="Classifier returned off_topic, but agriculture terms keep the request in scope.",
+            )
 
-    return mode
+    return decision_for_mode(mode, reason="LLM turn-strategy classifier selected this mode.")
+
+
+async def _route_turn_mode(
+    *,
+    user_q: str,
+    prompt_q: str,
+    history_text: str,
+    has_uploaded_files: bool = False,
+) -> TurnMode:
+    decision = await _route_turn_decision(
+        user_q=user_q,
+        prompt_q=prompt_q,
+        history_text=history_text,
+        has_uploaded_files=has_uploaded_files,
+    )
+    return decision.mode
 
 
 async def _normalize_query_for_retrieval(text: str) -> str:
@@ -794,19 +993,21 @@ async def ask_stream(
                 return effective_q
             return await _normalize_query_for_retrieval(effective_q)
 
-        async def _strategy_task() -> TurnMode:
-            return await _route_turn_mode(
+        async def _strategy_task() -> ScopeRouteDecision:
+            return await _route_turn_decision(
                 user_q=user_q,
                 prompt_q=prompt_q,
                 history_text=history_text,
+                has_uploaded_files=bool(requested_doc_ids or local_pdf_docs or local_image_docs),
             )
 
-        retrieval_q, turn_strategy, profile_context, answer_language = await asyncio.gather(
+        retrieval_q, route_decision, profile_context, answer_language = await asyncio.gather(
             _retrieval_q_task(),
             _strategy_task(),
             profile_future,
             _resolve_answer_language(user_q),
         )
+        turn_strategy = route_decision.mode
 
         # Concurrency gate
         sem = getattr(request.app.state, "gen_semaphore", None)
@@ -866,6 +1067,9 @@ async def ask_stream(
                 yield x
         elif turn_strategy == "assistant_capabilities":
             async for x in emit("status", {"stage": "Capabilities", "message": "Answering about assistant capabilities..."}):
+                yield x
+        elif turn_strategy == "platform_operation":
+            async for x in emit("status", {"stage": "Platform", "message": "Answering about EU-FarmBook platform scope..."}):
                 yield x
         elif turn_strategy == "general_knowledge":
             # Skip OpenSearch: this question is answerable from common agricultural
@@ -1038,7 +1242,10 @@ async def ask_stream(
             # the (now-tagged) image context and rely on the prompt directive
             # to describe what was observed and steer back to agriculture.
             if attachment_handoff and contexts and turn_strategy in {"off_topic", "conversation_only", "general_knowledge"}:
-                turn_strategy = "normal"
+                route_decision = file_analysis_decision(
+                    reason="Uploaded attachment context became available; route switched to file analysis."
+                )
+                turn_strategy = route_decision.mode
 
         t_ctx_end = time.perf_counter()
 
@@ -1064,7 +1271,7 @@ async def ask_stream(
                 grounding_state = "general_fallback"
         else:
             grounding_state = "euf_supported"
-        if turn_strategy in {"clarification_only", "off_topic", "history_only", "conversation_only", "assistant_capabilities", "general_knowledge"}:
+        if turn_strategy in {"clarification_only", "off_topic", "history_only", "conversation_only", "assistant_capabilities", "platform_operation", "general_knowledge"}:
             grounding_state = turn_strategy
 
         # --- Build prompt with conversation history ---
@@ -1110,6 +1317,13 @@ async def ask_stream(
                 user_profile_context=profile_context,
                 answer_language=answer_language,
             )
+        elif turn_strategy == "platform_operation":
+            messages = build_platform_operation_messages(
+                question=prompt_q,
+                history_messages=history_messages_for_prompt,
+                user_profile_context=profile_context,
+                answer_language=answer_language,
+            )
         elif turn_strategy == "general_knowledge":
             messages = build_general_knowledge_messages(
                 question=prompt_q,
@@ -1141,63 +1355,73 @@ async def ask_stream(
                 yield x
             return
 
-        # Concurrency gate
-        async for x in _acquire_or_queue():
-            yield x
-
         # --- LLM stream ---
-        async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
-            yield x
         async for x in emit("grounding", {"mode": grounding_state}):
             yield x
 
         t_llm_start = time.perf_counter()
-        try:
-            ctx = initial_llm_ctx
-            answer_chunks: List[str] = []
-            llm_usage = None
+        ctx = initial_llm_ctx
+        answer_chunks: List[str] = []
+        llm_usage = None
 
-            # vLLM streams the whole answer in one pass; there is no Ollama-style
-            # "context" continuation. If we ever need to handle done_reason="length"
-            # (e.g. switch to a different backend later), reintroduce a continuation
-            # loop here — but for now a single call is correct and clearer.
-            async for obj in stream_generate(
-                "", _temperature, _max_tokens,
-                context=ctx, model=normalized_model, num_ctx=S.NUM_CTX,
-                messages=messages,
-            ):
-                if "response" in obj and obj["response"]:
-                    chunk = obj["response"]
-                    answer_chunks.append(chunk)
-                    async for x in emit("token", chunk):
-                        yield x
-
-                if "context" in obj and obj["context"]:
-                    ctx = obj["context"]
-
-                if obj.get("done"):
-                    llm_usage = obj.get("usage") or llm_usage
-                    stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
-                    async for x in emit("stats", stats):
-                        yield x
-
-        except httpx.ConnectError as e:
-            logger.error(f"Cannot connect to LLM backend: {e}")
-            async for x in emit_app_error({"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
+        if turn_strategy == "platform_operation":
+            async for x in emit("status", {"stage": "Platform", "message": "Applying EU-FarmBook platform scope..."}):
                 yield x
-            return
-        except httpx.HTTPStatusError as e:
-            logger.error(f"LLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
-            async for x in emit_app_error({"stage": "LLM", "status": e.response.status_code}):
+            chunk = _platform_operation_static_answer(answer_language)
+            answer_chunks.append(chunk)
+            async for x in emit("token", chunk):
                 yield x
-            return
-        except Exception as e:
-            logger.error(f"Unexpected LLM error: {e}")
-            async for x in emit_app_error({"stage": "LLM", "message": f"Error: {str(e)}"}):
+            async for x in emit("stats", {"done": True, "deterministic": True}):
                 yield x
-            return
-        finally:
-            await _release()
+        else:
+            # Concurrency gate
+            async for x in _acquire_or_queue():
+                yield x
+
+            async for x in emit("status", {"stage": "LLM", "message": "Generating response..."}):
+                yield x
+            try:
+                # vLLM streams the whole answer in one pass; there is no Ollama-style
+                # "context" continuation. If we ever need to handle done_reason="length"
+                # (e.g. switch to a different backend later), reintroduce a continuation
+                # loop here — but for now a single call is correct and clearer.
+                async for obj in stream_generate(
+                    "", _temperature, _max_tokens,
+                    context=ctx, model=normalized_model, num_ctx=S.NUM_CTX,
+                    messages=messages,
+                ):
+                    if "response" in obj and obj["response"]:
+                        chunk = obj["response"]
+                        answer_chunks.append(chunk)
+                        async for x in emit("token", chunk):
+                            yield x
+
+                    if "context" in obj and obj["context"]:
+                        ctx = obj["context"]
+
+                    if obj.get("done"):
+                        llm_usage = obj.get("usage") or llm_usage
+                        stats = {k: v for k, v in obj.items() if k not in ("response", "prompt")}
+                        async for x in emit("stats", stats):
+                            yield x
+
+            except httpx.ConnectError as e:
+                logger.error(f"Cannot connect to LLM backend: {e}")
+                async for x in emit_app_error({"stage": "LLM", "message": f"Cannot connect to LLM: {e}"}):
+                    yield x
+                return
+            except httpx.HTTPStatusError as e:
+                logger.error(f"LLM HTTP error {e.response.status_code}: {e.response.text[:500]}")
+                async for x in emit_app_error({"stage": "LLM", "status": e.response.status_code}):
+                    yield x
+                return
+            except Exception as e:
+                logger.error(f"Unexpected LLM error: {e}")
+                async for x in emit_app_error({"stage": "LLM", "message": f"Error: {str(e)}"}):
+                    yield x
+                return
+            finally:
+                await _release()
 
         t_llm_end = time.perf_counter()
         full_text = _sanitize_generated_markdown("".join(answer_chunks))
@@ -1219,7 +1443,7 @@ async def ask_stream(
             and session_id
             and auth_token
             and not pause_personalization
-            and turn_strategy not in ("clarification_only", "off_topic", "conversation_only", "assistant_capabilities")
+            and turn_strategy not in ("clarification_only", "off_topic", "conversation_only", "assistant_capabilities", "platform_operation")
         ):
             asyncio.create_task(
                 UserProfileService.process_conversation_turn(
@@ -1408,18 +1632,100 @@ def _is_prohibited_follow_up(candidate: str) -> bool:
     return any(pattern.search(candidate) for pattern in _PROHIBITED_FOLLOW_UP_PATTERNS)
 
 
-_EXPORT_INTENT_SYSTEM_PROMPT = """Classify the user's latest message in any language.
+_EXPORT_INTENT_SYSTEM_PROMPT = """Classify the latest user message in any language.
 Return ONLY one JSON object with these keys:
 - intent: normal_chat, export_previous, or generate_export
 - format: pdf, docx, csv, xlsx, pptx, or null
+- scope: previous_answer, conversation, or null
 - confidence: number from 0 to 1
 
-Use export_previous when the user asks to convert/download/save the preceding answer.
+Use export_previous when the user asks to convert/download/save existing chat content.
+Use scope=previous_answer when the user asks for this answer, that answer, or the preceding answer.
+Use scope=conversation when the user asks for all of this, everything above, the whole chat, this conversation, or chat history.
 Use generate_export when the user asks for new substantive content delivered as a file.
 Use normal_chat for questions about file formats, unsupported formats, or ordinary conversation.
 Never generate document content. Never add prose or markdown."""
 _EXPORT_FORMATS = {"pdf", "docx", "csv", "xlsx", "pptx"}
 _EXPORT_INTENTS = {"normal_chat", "export_previous", "generate_export"}
+_EXPORT_SCOPES = {"previous_answer", "conversation"}
+
+
+def _detect_export_format(text: str) -> str | None:
+    q = (text or "").strip().lower()
+    if not q:
+        return None
+    if "excel" in q or "xlsx" in q or "spreadsheet" in q:
+        return "xlsx"
+    for export_format in ("pdf", "docx", "csv", "pptx"):
+        if _re.search(rf"\b{export_format}\b", q):
+            return export_format
+    if _re.search(r"\bpower\s*point\b", q):
+        return "pptx"
+    if _re.search(r"\bword\b", q):
+        return "docx"
+    return None
+
+
+def _requests_conversation_export(text: str) -> bool:
+    q = (text or "").strip().lower()
+    if not q:
+        return False
+    return any(
+        phrase in q
+        for phrase in (
+            "all of this",
+            "all this",
+            "everything above",
+            "everything so far",
+            "whole conversation",
+            "entire conversation",
+            "full conversation",
+            "this conversation",
+            "whole chat",
+            "entire chat",
+            "full chat",
+            "chat history",
+            "conversation history",
+        )
+    )
+
+
+def _is_export_format_followup(text: str) -> bool:
+    q = (text or "").strip().lower()
+    if not q or not _detect_export_format(q):
+        return False
+    return bool(_re.search(r"^(what about|and|also|same|again|as|in)\b", q))
+
+
+def _deterministic_export_intent(
+    query: str,
+    *,
+    previous_export_scope: str | None = None,
+    has_conversation: bool = False,
+) -> ExportIntentOut | None:
+    export_format = _detect_export_format(query)
+    if not export_format:
+        return None
+
+    if _requests_conversation_export(query):
+        return ExportIntentOut(
+            intent="export_previous",
+            format=export_format,
+            scope="conversation" if has_conversation else "previous_answer",
+            confidence=1.0,
+            meta={"reason": "deterministic_conversation_scope"},
+        )
+
+    if _is_export_format_followup(query) and previous_export_scope in _EXPORT_SCOPES:
+        return ExportIntentOut(
+            intent="export_previous",
+            format=export_format,
+            scope=previous_export_scope,
+            confidence=1.0,
+            meta={"reason": "deterministic_previous_export_scope"},
+        )
+
+    return None
 
 
 def _parse_export_intent(raw: str) -> ExportIntentOut:
@@ -1439,6 +1745,7 @@ def _parse_export_intent(raw: str) -> ExportIntentOut:
 
     intent = str(data.get("intent") or "").strip().lower()
     export_format = str(data.get("format") or "").strip().lower() or None
+    scope = str(data.get("scope") or "").strip().lower() or None
     try:
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0))))
     except (TypeError, ValueError):
@@ -1450,10 +1757,12 @@ def _parse_export_intent(raw: str) -> ExportIntentOut:
         return ExportIntentOut(intent="normal_chat", confidence=confidence)
     if export_format not in _EXPORT_FORMATS:
         return ExportIntentOut(meta={"reason": "invalid_format"})
+    if scope not in _EXPORT_SCOPES:
+        scope = "previous_answer"
     if confidence < 0.75:
         return ExportIntentOut(confidence=confidence, meta={"reason": "low_confidence"})
 
-    return ExportIntentOut(intent=intent, format=export_format, confidence=confidence)
+    return ExportIntentOut(intent=intent, format=export_format, scope=scope, confidence=confidence)
 
 
 def _parse_follow_ups(raw: str, enforce_policy: bool = True) -> list[str]:
@@ -1503,9 +1812,34 @@ def _parse_follow_ups(raw: str, enforce_policy: bool = True) -> list[str]:
 async def classify_export_intent(inp: ExportIntentIn) -> ExportIntentOut:
     query = (inp.query or "").strip()
     previous = (inp.previous_assistant_message or "").strip()
+    previous_export_scope = (inp.previous_export_scope or "").strip().lower() or None
+    has_conversation = bool(inp.conversation_messages)
+
+    deterministic = _deterministic_export_intent(
+        query,
+        previous_export_scope=previous_export_scope,
+        has_conversation=has_conversation,
+    )
+    if deterministic is not None:
+        deterministic.meta["model"] = "deterministic"
+        return deterministic
+
+    previous_exists = "yes" if previous else "no"
+    conversation_exists = "yes" if has_conversation else "no"
+    previous_excerpt = previous[:1200] if previous else "(none)"
+    conversation_excerpt = "\n".join(
+        f"{m.role}: {m.content}"[:500]
+        for m in inp.conversation_messages[:8]
+    )
+    if not conversation_excerpt:
+        conversation_excerpt = "(none)"
+    previous_scope_label = previous_export_scope or "(none)"
     user_content = (
-        f"Previous assistant answer exists: {'yes' if previous else 'no'}\n"
-        f"Previous assistant answer excerpt:\n{previous[:1200] if previous else '(none)'}\n\n"
+        f"Previous assistant answer exists: {previous_exists}\n"
+        f"Previous assistant answer excerpt:\n{previous_excerpt}\n\n"
+        f"Conversation messages exist: {conversation_exists}\n"
+        f"Conversation excerpt:\n{conversation_excerpt}\n\n"
+        f"Previous export scope: {previous_scope_label}\n\n"
         f"Latest user message:\n{query[:1500]}\n\n"
         "Return JSON now."
     )
@@ -1514,7 +1848,7 @@ async def classify_export_intent(inp: ExportIntentIn) -> ExportIntentOut:
         raw = await generate_once(
             "",
             temperature=0.0,
-            max_tokens=80,
+            max_tokens=96,
             messages=[
                 {"role": "system", "content": _EXPORT_INTENT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -1528,6 +1862,15 @@ async def classify_export_intent(inp: ExportIntentIn) -> ExportIntentOut:
         return ExportIntentOut(meta={"reason": "classifier_unavailable"})
 
     result = _parse_export_intent(raw)
+    if result.intent != "normal_chat":
+        if _requests_conversation_export(query):
+            result.scope = "conversation" if has_conversation else "previous_answer"
+            result.meta["scope_override"] = "conversation_phrase"
+        elif _is_export_format_followup(query) and previous_export_scope in _EXPORT_SCOPES:
+            result.scope = previous_export_scope
+            result.meta["scope_override"] = "previous_export_scope"
+        elif not result.scope:
+            result.scope = "previous_answer"
     result.meta["model"] = S.VLLM_MODEL
     return result
 

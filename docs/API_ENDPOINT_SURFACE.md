@@ -136,6 +136,12 @@ This document lists the additive API endpoints exposed for the current Farm Assi
 - `DELETE /chatbot/api/files/image/{doc_id}`
   - Delete an uploaded image.
 
+- `POST /chatbot/api/files/export`
+  - Export assistant content as `pdf`, `docx`, `csv`, `xlsx`, or `pptx`.
+  - Existing usage may send `title`, `content`, `format`, and optional `sources`.
+  - Conversation transcript export may send `scope=conversation` plus `messages` containing `{role, content}` items.
+  - For transcript exports, CSV/XLSX output uses `Turn`, `Speaker`, and `Message` columns.
+
 ## Experiments
 
 - `GET /chatbot/api/experiments/turns`
@@ -151,6 +157,12 @@ This document lists the additive API endpoints exposed for the current Farm Assi
   - List stored head-to-head comparison runs.
 
 ## Utilities
+
+- `POST /chatbot/api/export-intent`
+  - Classify whether the latest message is an export request.
+  - Returns `intent`, `format`, `confidence`, and optional `scope`.
+  - `scope=previous_answer` means export the preceding assistant answer.
+  - `scope=conversation` means export the conversation transcript, used for phrases like "all of this" or "whole conversation".
 
 - `POST /chatbot/api/follow-ups`
   - Suggest follow-up questions for the last turn.
