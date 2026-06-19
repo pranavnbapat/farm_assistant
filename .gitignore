@@ -45,5 +45,6 @@ testing/
 # Markdown docs
 *.md
 !README.md
+!CHANGELOG.md
 !docs/
 !docs/**/*.md

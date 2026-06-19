@@ -1009,14 +1009,54 @@ async def ask_stream(
         )
         turn_strategy = route_decision.mode
 
-        # Concurrency gate
-        sem = getattr(request.app.state, "gen_semaphore", None)
+        # Concurrency gate. Arena requests pass X-Farm-Experiment-Backend, so one
+        # Farm Assistant process can queue independently per LLM backend instead
+        # of using one global generation slot pool for all variants.
+        def _generation_queue_key() -> str:
+            headers = request.headers if request is not None else {}
+            backend_key = (headers.get("x-farm-experiment-backend") or "").strip()
+            if backend_key:
+                return backend_key
+            provider = (getattr(S, "LLM_PROVIDER", "") or "vllm").strip().lower() or "vllm"
+            if provider == "anthropic":
+                return f"anthropic:{getattr(S, 'ANTHROPIC_MODEL', '') or 'default'}"
+            return f"vllm:{S.VLLM_URL}:{normalized_model}"
+
+        async def _get_generation_semaphore(queue_key: str):
+            state = getattr(request.app, "state", None) if request is not None else None
+            if state is None:
+                return None
+
+            semaphores = getattr(state, "gen_semaphores", None)
+            if semaphores is None:
+                return getattr(state, "gen_semaphore", None)
+
+            limit = int(getattr(state, "gen_semaphore_limit", 3) or 3)
+            lock = getattr(state, "gen_semaphores_lock", None)
+            if lock is None:
+                sem = semaphores.get(queue_key)
+                if sem is None:
+                    sem = asyncio.Semaphore(limit)
+                    semaphores[queue_key] = sem
+                return sem
+
+            async with lock:
+                sem = semaphores.get(queue_key)
+                if sem is None:
+                    sem = asyncio.Semaphore(limit)
+                    semaphores[queue_key] = sem
+                return sem
+
+        queue_key = _generation_queue_key()
+        sem = None
 
         async def _acquire_or_queue():
+            nonlocal sem
+            sem = await _get_generation_semaphore(queue_key)
             if sem is None:
                 return
             if getattr(sem, "_value", 1) == 0:
-                async for x in emit("status", {"stage": "Queue", "message": "Waiting for a free slot..."}):
+                async for x in emit("status", {"stage": "Queue", "message": f"Waiting for a free {queue_key} slot..."}):
                     yield x
             await sem.acquire()
 

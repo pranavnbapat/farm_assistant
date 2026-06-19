@@ -152,7 +152,9 @@ async def lifespan(app: FastAPI):
     limit = int(os.getenv("MAX_ACTIVE_GENERATIONS", "3"))
 
     state = cast(Any, app).state
-    state.gen_semaphore = asyncio.Semaphore(limit)
+    state.gen_semaphore_limit = limit
+    state.gen_semaphores = {}
+    state.gen_semaphores_lock = asyncio.Lock()
 
     yield
 
