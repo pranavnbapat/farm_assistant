@@ -73,6 +73,8 @@ logger = logging.getLogger("farm-assistant.router")
 S = get_settings()
 router = APIRouter()
 
+_EMPTY_CITATION_RE = _re.compile(r"[ \t]*(?:\[(?:[ \t]|\[[ \t]*\])*\][ \t]*)+(?:-[ \t]*)?")
+
 def _get_answer_language(question: str) -> str:
     """Resolve a deterministic language name from the latest message only."""
     language_code = detect_language_confident(question) or detect_language(question)
@@ -193,10 +195,14 @@ def _normalize_model(model: Optional[str]) -> str:
 def _sanitize_generated_markdown(text: str) -> str:
     """
     Light cleanup only. Frontend renders real Markdown (tables, headings, code blocks),
-    so we no longer rewrite tables to bullets or strip <br>; just normalize line endings
-    and collapse excessive blank lines.
+    so we no longer rewrite tables to bullets or strip <br>; just normalize line endings,
+    remove empty citation placeholders, and collapse excessive blank lines.
     """
     cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = _EMPTY_CITATION_RE.sub(" ", cleaned)
+    cleaned = _re.sub(r"(?m)^[ \t]*[-*+•·.]?[ \t]*$", "", cleaned)
+    cleaned = _re.sub(r" +([.,;:!?])", r"\1", cleaned)
+    cleaned = _re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -239,8 +245,12 @@ def _strip_orphan_citations(text: str, valid_source_numbers: set[int]) -> str:
         return "[" + ", ".join(str(token) for token in valid_tokens) + "]"
 
     cleaned = _re.sub(r"\[\s*([\d\s,–-]+)\s*\]", _replace, text)
+    cleaned = _EMPTY_CITATION_RE.sub(" ", cleaned)
+    cleaned = _re.sub(r"(?m)^[ \t]*[-*+•·.]?[ \t]*$", "", cleaned)
     cleaned = _re.sub(r" +([.,;:!?])", r"\1", cleaned)
-    return cleaned
+    cleaned = _re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _cache_params(_temp, _max, _model):
@@ -249,7 +259,7 @@ def _cache_params(_temp, _max, _model):
         "max_tokens": _max,
         "model": _normalize_model(_model),
         "num_ctx": S.NUM_CTX,
-        "top_p": 0.9,
+        "top_p": S.TOP_P,
     }
 
 

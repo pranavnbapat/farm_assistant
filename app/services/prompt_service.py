@@ -51,11 +51,14 @@ _BREVITY_RULE = (
 )
 
 _FORMATTING_RULE = (
-    "For ASCII art, diagrams, command output, configuration snippets, or any block whose "
-    "line breaks and spacing must be preserved, wrap the entire block in a single fenced code "
-    "block using triple backticks (```). Do not wrap individual lines in single backticks and "
-    "do not split a single visual into multiple short code fences — emit one fence with the "
-    "full multi-line content inside."
+    "Format answers cleanly and professionally. When listing multiple items, use a proper "
+    "Markdown bullet list with one item per bullet and concise explanatory text after each "
+    "item. Do not emit empty bullets, lone punctuation lines, dangling hyphens, or placeholder "
+    "citation brackets. For ASCII art, diagrams, command output, configuration snippets, or "
+    "any block whose line breaks and spacing must be preserved, wrap the entire block in a "
+    "single fenced code block using triple backticks (```). Do not wrap individual lines in "
+    "single backticks and do not split a single visual into multiple short code fences — emit "
+    "one fence with the full multi-line content inside."
 )
 
 

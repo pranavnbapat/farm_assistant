@@ -78,6 +78,16 @@ def _anthropic_model(model: str | None) -> str:
     return S.ANTHROPIC_MODEL
 
 
+def _configured_top_p() -> float | None:
+    try:
+        top_p = float(getattr(S, "TOP_P", 0.9))
+    except (TypeError, ValueError):
+        return 0.9
+    if 0 < top_p <= 1:
+        return top_p
+    return None
+
+
 def _split_system_and_messages(
     prompt: str,
     messages: Optional[List[Dict[str, str]]],
@@ -115,6 +125,9 @@ async def _anthropic_generate_once(
     messages: Optional[List[Dict[str, str]]],
 ) -> str:
     system_text, chat = _split_system_and_messages(prompt, messages)
+    # Anthropic rejects sending both `temperature` and `top_p` ("cannot both be
+    # specified for this model"). We drive sampling with `temperature` (the app's
+    # configured knob), so we deliberately omit `top_p` here.
     kwargs: Dict[str, Any] = {
         "model": _anthropic_model(model),
         "max_tokens": _anthropic_max_tokens(max_tokens),
@@ -138,6 +151,8 @@ async def _anthropic_stream_generate(
     messages: Optional[List[Dict[str, str]]],
 ) -> AsyncGenerator[Dict[str, Any], None]:
     system_text, chat = _split_system_and_messages(prompt, messages)
+    # See _anthropic_generate_once: omit `top_p` so we don't send it alongside
+    # `temperature`, which Anthropic rejects for this model.
     kwargs: Dict[str, Any] = {
         "model": _anthropic_model(model),
         "max_tokens": _anthropic_max_tokens(max_tokens),
@@ -202,7 +217,9 @@ def build_gen_payload(
             payload["max_completion_tokens"] = max_tokens
     else:
         payload["temperature"] = temperature
-        payload["top_p"] = 0.9
+        top_p = _configured_top_p()
+        if top_p is not None:
+            payload["top_p"] = top_p
         # Only add max_tokens if it's positive (vLLM default is auto)
         if max_tokens > 0:
             payload["max_tokens"] = max_tokens

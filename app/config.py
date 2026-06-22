@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     MAX_USER_INPUT_TOKENS: int = 1200
     TEMPERATURE: float = 0.4
     NUM_CTX: int = 4096
+    TOP_P: float = 0.9
     TOP_K: int = 5
     MAX_CONTEXT_CHARS: int = 24000
     RETRIEVAL_CANDIDATE_K: int = 10

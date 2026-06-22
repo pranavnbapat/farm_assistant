@@ -34,6 +34,21 @@ class FollowUpPolicyTests(unittest.TestCase):
             "A KML example was described.",
         )
 
+    def test_removes_empty_citation_placeholders(self):
+        from app.routers.ask import _sanitize_generated_markdown, _strip_orphan_citations
+
+        answer = "Sensors include camera systems [], milk sensors [ ], and rumen pH sensors []."
+        expected = "Sensors include camera systems, milk sensors, and rumen pH sensors."
+
+        self.assertEqual(_sanitize_generated_markdown(answer), expected)
+        self.assertEqual(_strip_orphan_citations(answer, {1, 2, 3}), expected)
+
+        nested = "Vaccines keep their efficacy [[]]-\n\n.\n\nLong-term savings [[][]]- are possible."
+        self.assertEqual(
+            _sanitize_generated_markdown(nested),
+            "Vaccines keep their efficacy\n\nLong-term savings are possible.",
+        )
+
 
 class FollowUpEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_suppressed_mode_skips_generation(self):
