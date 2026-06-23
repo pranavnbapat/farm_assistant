@@ -75,6 +75,21 @@ router = APIRouter()
 
 _EMPTY_CITATION_RE = _re.compile(r"[ \t]*(?:\[(?:[ \t]|\[[ \t]*\])*\][ \t]*)+(?:-[ \t]*)?")
 
+# A "lone marker" line: only whitespace (incl. non-breaking / zero-width spaces)
+# around at most one stray bullet or dot. Models (notably Qwen and EuroLLM) emit
+# these as empty list items between sections, which the Markdown renderer draws
+# as orphan bullets. Built from code points so the source stays pure ASCII.
+# Provider-agnostic - applied to every answer regardless of the LLM.
+_LONE_MARKER_WS = "".join(chr(c) for c in (0x20, 0x09, 0xA0, 0x200B, 0x200C, 0x200D, 0xFEFF))
+_LONE_MARKER_BULLETS = "".join(
+    chr(c) for c in (0x2D, 0x2A, 0x2B, 0x2E, 0x2022, 0x00B7, 0x2023, 0x2043, 0x2219, 0x25CF, 0x25CB, 0x25E6)
+)
+_LONE_MARKER_RE = _re.compile(
+    rf"(?m)^[{_re.escape(_LONE_MARKER_WS)}]*"
+    rf"[{_re.escape(_LONE_MARKER_BULLETS)}]?"
+    rf"[{_re.escape(_LONE_MARKER_WS)}]*$"
+)
+
 def _get_answer_language(question: str) -> str:
     """Resolve a deterministic language name from the latest message only."""
     language_code = detect_language_confident(question) or detect_language(question)
@@ -200,7 +215,7 @@ def _sanitize_generated_markdown(text: str) -> str:
     """
     cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     cleaned = _EMPTY_CITATION_RE.sub(" ", cleaned)
-    cleaned = _re.sub(r"(?m)^[ \t]*[-*+•·.]?[ \t]*$", "", cleaned)
+    cleaned = _LONE_MARKER_RE.sub("", cleaned)
     cleaned = _re.sub(r" +([.,;:!?])", r"\1", cleaned)
     cleaned = _re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -246,7 +261,7 @@ def _strip_orphan_citations(text: str, valid_source_numbers: set[int]) -> str:
 
     cleaned = _re.sub(r"\[\s*([\d\s,–-]+)\s*\]", _replace, text)
     cleaned = _EMPTY_CITATION_RE.sub(" ", cleaned)
-    cleaned = _re.sub(r"(?m)^[ \t]*[-*+•·.]?[ \t]*$", "", cleaned)
+    cleaned = _LONE_MARKER_RE.sub("", cleaned)
     cleaned = _re.sub(r" +([.,;:!?])", r"\1", cleaned)
     cleaned = _re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = _re.sub(r"\n{3,}", "\n\n", cleaned)

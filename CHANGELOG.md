@@ -147,3 +147,11 @@ This changelog records Farm Assistant changes from the `master` branch histories
 - `9b4ec1dc` [master] - pranavnbapat - docs blocked
 - `e09d5ba2` [master] - pranavnbapat - application segregated, streaming added
 - `0a394c5e` [master] - pranavnbapat - Initial commit
+
+## 2026-06-22
+
+- `350d11a0` [master] - pranavnbapat - fix(anthropic): drop top_p so Claude isn't sent both temperature and top_p
+
+## 2026-06-19
+
+- `5a795d4a` [master] - pranavnbapat - feat: add per-backend generation queues and changelog tooling
