@@ -65,6 +65,7 @@ from app.services.scope_contract import (
     file_analysis_decision,
 )
 from app.services.search_service import build_search_payload, collect_os_items
+from app.services.web_search_service import web_search_and_build_contexts
 from app.utils.language_utils import detect_language, detect_language_confident, get_language_name
 from app.services.user_profile_service import UserProfileService
 from app.schemas import AskIn, ChatMessageStreamIn, ExportIntentIn, ExportIntentOut, FollowUpsIn, FollowUpsOut, SummariseIn, SummariseOut
@@ -1105,6 +1106,8 @@ async def ask_stream(
         attachment_contexts: list[str] = []
         attachment_sources: list = []
         retrieval_context_count = 0
+        web_context_count = 0
+        retrieval_quality = 0.0
         image_stats = {"total": 0, "agri_related": 0, "non_agri": 0}
         attachment_handoff = bool(requested_doc_ids) and (
             _is_file_handoff_query(user_q)
@@ -1203,6 +1206,35 @@ async def ask_stream(
                     contexts = []
                     sources = []
             retrieval_context_count = len(contexts)
+
+            # --- Trusted web-search fallback (gated, default OFF) ---
+            # Fires when internal retrieval is empty OR weak-but-present. The backend
+            # searches an allowlist and feeds extracted passages as additional cited
+            # grounding; the model never browses. KO sources keep their citation
+            # numbers; web sources are appended after them.
+            if S.WEB_FALLBACK_ENABLED:
+                needs_web = (not contexts) or (retrieval_quality < S.WEB_FALLBACK_QUALITY_THRESHOLD)
+                if needs_web:
+                    async for x in emit("status", {"stage": "Web", "message": "Searching trusted external sources..."}):
+                        yield x
+                    try:
+                        web_contexts, web_sources = await web_search_and_build_contexts(
+                            retrieval_q,
+                            max_results=S.WEB_FALLBACK_MAX_RESULTS,
+                            max_chars=min(
+                                S.WEB_FALLBACK_MAX_CHARS,
+                                S.MAX_CONTEXT_CHARS - sum(len(c) for c in contexts),
+                            ),
+                            sid_offset=len(sources),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Web fallback failed: {e}")
+                        web_contexts, web_sources = [], []
+                    if web_contexts:
+                        contexts.extend(web_contexts)
+                        sources.extend(web_sources)
+                        web_context_count = len(web_contexts)
+
             t_ctx_end = time.perf_counter()
 
         persisted_attachment_records = []
@@ -1328,7 +1360,11 @@ async def ask_stream(
             for i, s in enumerate(sources)
         ]
         if turn_strategy == "normal":
-            if retrieval_context_count > 0:
+            if retrieval_context_count > 0 and web_context_count > 0:
+                grounding_state = "euf_web_supported"
+            elif web_context_count > 0:
+                grounding_state = "web_supported"
+            elif retrieval_context_count > 0:
                 grounding_state = "euf_supported"
             elif attachment_contexts:
                 grounding_state = "attachment_supported"
@@ -1404,6 +1440,7 @@ async def ask_stream(
                 user_profile_context=profile_context,
                 has_relevant_sources=bool(contexts),
                 answer_language=answer_language,
+                has_web_sources=web_context_count > 0,
             )
         prompt_tokens = sum(_estimate_tokens(m.get("content", "")) for m in messages)
         prompt_cap = min(
@@ -1672,6 +1709,8 @@ _FOLLOW_UPS_SYSTEM_PROMPT = (
 _FOLLOW_UPS_ALLOWED_MODES = {
     "attachment_supported",
     "euf_supported",
+    "web_supported",
+    "euf_web_supported",
 }
 
 _PROHIBITED_FOLLOW_UP_PATTERNS = (

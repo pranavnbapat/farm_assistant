@@ -62,6 +62,34 @@ class Settings(BaseSettings):
     # Auto-detected for models named "gpt-5*"; set true to force it otherwise.
     OPENAI_GPT5_PARAM_STYLE: bool = False
 
+    # --- Web-search fallback (additive, default OFF) ---
+    # When enabled, the `normal` retrieval turn searches a trusted allowlist of
+    # agriculture/forestry web sources whenever internal OpenSearch retrieval is
+    # empty or weak, and feeds the extracted passages to the LLM as cited grounding.
+    # The backend performs the search/extraction — the model never browses directly.
+    WEB_FALLBACK_ENABLED: bool = False
+    # Ordered provider fallback chain, tried left to right. A provider is skipped
+    # when its required API key is missing, and the chain advances to the next one
+    # on any error (quota/rate-limit/network) or when it returns no allowlisted hits.
+    # Supported: "tavily" (key), "staan" (key, EU-sovereign, see note in
+    # web_search_service), "brave" (key), "duckduckgo" (free, keyless),
+    # "wikipedia" (free, keyless institutional/foundational source).
+    WEB_SEARCH_PROVIDERS: str = "tavily,staan,brave,duckduckgo,wikipedia"
+    STAAN_API_KEY: str | None = None
+    TAVILY_API_KEY: str | None = None
+    BRAVE_API_KEY: str | None = None
+    # Internal-retrieval quality below this (token-overlap, 0..1) triggers a web
+    # fallback even when some KO results exist. The pre-existing <0.15 hard-drop in
+    # ask.py remains the "empty" trigger; this is the higher "weak" trigger.
+    WEB_FALLBACK_QUALITY_THRESHOLD: float = 0.35
+    WEB_FALLBACK_MAX_RESULTS: int = 4
+    WEB_FALLBACK_MAX_CHARS: int = 6000   # sub-budget carved out of MAX_CONTEXT_CHARS
+    WEB_FETCH_TIMEOUT: float = 6.0
+    WEB_TRUSTED_DOMAINS: str = (
+        "fao.org,europa.eu,ec.europa.eu,efsa.europa.eu,eppo.int,oecd.org,"
+        "inrae.fr,wur.nl,teagasc.ie,ahdb.org.uk,extension.org,wikipedia.org"
+    )
+
     # pydantic v2 config
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -104,6 +132,16 @@ class Settings(BaseSettings):
             self.RUNPOD_VLLM_VISION_HOST = self.RUNPOD_VLLM_VISION_HOST.rstrip("/")
 
         return self
+
+    def web_trusted_domains_list(self) -> list[str]:
+        """Parse WEB_TRUSTED_DOMAINS (csv) into a clean, lowercased domain list."""
+        raw = self.WEB_TRUSTED_DOMAINS or ""
+        return [d.strip().lower().lstrip(".") for d in raw.split(",") if d.strip()]
+
+    def web_search_providers_list(self) -> list[str]:
+        """Parse WEB_SEARCH_PROVIDERS (csv) into an ordered, lowercased provider chain."""
+        raw = self.WEB_SEARCH_PROVIDERS or ""
+        return [p.strip().lower() for p in raw.split(",") if p.strip()]
 
 @lru_cache()
 def get_settings() -> Settings:

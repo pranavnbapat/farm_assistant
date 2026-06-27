@@ -166,6 +166,7 @@ def build_messages(
     user_profile_context: Optional[str] = None,
     has_relevant_sources: bool = True,
     answer_language: Optional[str] = None,
+    has_web_sources: bool = False,
 ) -> list[dict]:
     """Standard retrieval-grounded turn."""
     directives = [
@@ -208,6 +209,13 @@ def build_messages(
         "If the image block contains \"Visual analysis failed\", apologize that the image could not "
         "be analyzed this time and ask the user to retry or describe what they wanted to know."
     )
+    if has_web_sources:
+        directives.append(
+            "Some numbered sources are external trusted references (for example FAO, the "
+            "European Commission, EFSA, INRAE, or university extension services), not "
+            "EU-FarmBook knowledge objects. Use and cite them exactly the same way as the "
+            "other sources, but do not describe or imply that they are EU-FarmBook material."
+        )
     directives.append(_BREVITY_RULE)
     directives.append(_FORMATTING_RULE)
     directives.append(_EXPORT_RULE)

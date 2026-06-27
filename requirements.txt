@@ -1,16 +1,19 @@
-fastapi==0.137.1
+fastapi==0.138.1
 httpx==0.28.1
 Jinja2==3.1.6
 pydantic==2.13.4
-pydantic-settings==2.14.1
-pypdf==6.13.2
+pydantic-settings==2.14.2
+pypdf==6.14.2
 openpyxl==3.1.5
 python-docx==1.2.0
 python-pptx==1.0.2
-reportlab==4.5.1
+reportlab==5.0.0
 python-dotenv==1.2.2
 python-multipart==0.0.32
-sse-starlette==3.4.4
+sse-starlette==3.4.5
 uvicorn==0.49.0
 # Only imported when LLM_PROVIDER=anthropic (lazy import); harmless for other instances.
-anthropic==0.109.2
+anthropic==0.112.0
+# Only imported when WEB_FALLBACK_ENABLED=true (lazy import); harmless when the flag is off.
+ddgs==9.14.4
+trafilatura==2.1.0

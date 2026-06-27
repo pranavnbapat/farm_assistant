@@ -155,3 +155,7 @@ This changelog records Farm Assistant changes from the `master` branch histories
 ## 2026-06-19
 
 - `5a795d4a` [master] - pranavnbapat - feat: add per-backend generation queues and changelog tooling
+
+## 2026-06-23
+
+- `43cd3ad5` [master] - pranavnbapat - fix(markdown): strip orphan bullet/dot lines incl. nbsp/zero-width from model output
