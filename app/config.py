@@ -46,6 +46,23 @@ class Settings(BaseSettings):
     MAX_CONTEXT_CHARS: int = 24000
     RETRIEVAL_CANDIDATE_K: int = 10
     RETRIEVAL_MIN_SCORE: float = 1.0
+    # Lexical-relevance floor (0..1 from estimate_retrieval_quality). Below this, the
+    # retrieved KO contexts are dropped entirely and the turn is treated as "found
+    # nothing" (then general fallback or, if enabled, web fallback).
+    RETRIEVAL_DROP_THRESHOLD: float = 0.15
+
+    # --- Retrieval relevance gate mode ---
+    # "overlap" (default): judge KO sufficiency by lexical word-overlap (estimate_retrieval_quality).
+    # "semantic": use scout's per-chunk `semantic_score` (content_embedding cosine) instead —
+    #   calibrated and cross-query comparable. Requests scout with include_semantic_score=true.
+    # Falls back to overlap automatically if items carry no semantic_score.
+    RELEVANCE_MODE: str = "overlap"
+    # Semantic-mode thresholds on scout's neural (1+cos)/2 scale. Calibrated on msmarco
+    # over 9 probes: on-topic best-chunk scores >=0.91, off-topic <=0.87 (a ~0.04 dead
+    # zone). These sit in/above that zone. NOTE: msmarco-specific and narrow-margin —
+    # re-calibrate per model (e.g. minilm) and from ClickHouse /llm_retrieve logs.
+    SEMANTIC_DROP_THRESHOLD: float = 0.88   # best chunk below this: drop all KO context
+    SEMANTIC_WEB_THRESHOLD: float = 0.90    # best chunk below this: weak -> web fallback
 
     # --- LLM provider routing (additive) ---
     # "vllm" (default) keeps the existing OpenAI-compatible /v1/chat/completions

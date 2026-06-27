@@ -28,6 +28,7 @@ from app.services.chat_history import (
 from app.services.context_service import (
     build_context_and_sources,
     estimate_retrieval_quality,
+    estimate_semantic_quality,
     filter_items_by_min_score,
 )
 from app.services.image_service import (
@@ -1197,14 +1198,32 @@ async def ask_stream(
             # rather than ground the LLM in noise, drop them and treat as a
             # no-sources turn. The LLM prompt then says "no EU-FarmBook material
             # was found, give a cautious best-effort answer".
-            if items and contexts:
+            # Relevance gate. Two modes produce a 0..1 `retrieval_quality` plus the
+            # drop/web thresholds: lexical word-overlap (default) or scout's calibrated
+            # semantic_score. Semantic mode is used only when items actually carry the
+            # field; otherwise we fall back to word-overlap automatically.
+            drop_threshold = S.RETRIEVAL_DROP_THRESHOLD
+            web_threshold = S.WEB_FALLBACK_QUALITY_THRESHOLD
+            semantic_quality = (
+                estimate_semantic_quality(items, top_n=3)
+                if (S.RELEVANCE_MODE or "").strip().lower() == "semantic"
+                else None
+            )
+            if semantic_quality is not None:
+                retrieval_quality = semantic_quality
+                drop_threshold = S.SEMANTIC_DROP_THRESHOLD
+                web_threshold = S.SEMANTIC_WEB_THRESHOLD
+            elif items and contexts:
                 retrieval_quality = estimate_retrieval_quality(retrieval_q, items, top_n=3)
-                if retrieval_quality < 0.15:
-                    logger.info(
-                        f"Dropped {len(contexts)} retrieved contexts: quality={retrieval_quality:.3f} below threshold"
-                    )
-                    contexts = []
-                    sources = []
+
+            if contexts and retrieval_quality < drop_threshold:
+                logger.info(
+                    "Dropped %d retrieved contexts: quality=%.3f below drop=%.3f (mode=%s)",
+                    len(contexts), retrieval_quality, drop_threshold,
+                    "semantic" if semantic_quality is not None else "overlap",
+                )
+                contexts = []
+                sources = []
             retrieval_context_count = len(contexts)
 
             # --- Trusted web-search fallback (gated, default OFF) ---
@@ -1213,7 +1232,7 @@ async def ask_stream(
             # grounding; the model never browses. KO sources keep their citation
             # numbers; web sources are appended after them.
             if S.WEB_FALLBACK_ENABLED:
-                needs_web = (not contexts) or (retrieval_quality < S.WEB_FALLBACK_QUALITY_THRESHOLD)
+                needs_web = (not contexts) or (retrieval_quality < web_threshold)
                 if needs_web:
                     async for x in emit("status", {"stage": "Web", "message": "Searching trusted external sources..."}):
                         yield x

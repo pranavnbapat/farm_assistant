@@ -35,6 +35,11 @@ def build_search_payload(inp: AskIn) -> Dict[str, Any]:
         "k": retrieval_k,
     }
 
+    # In semantic relevance mode, ask scout to attach a calibrated per-chunk
+    # semantic_score so the sufficiency gate can threshold meaning, not word overlap.
+    if (S.RELEVANCE_MODE or "").strip().lower() == "semantic":
+        payload["include_semantic_score"] = True
+
     return payload
 
 async def fetch_os_page(

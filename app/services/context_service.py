@@ -245,6 +245,27 @@ def estimate_retrieval_quality(user_q: str, items: list[dict], top_n: int = 3) -
     return max(0.0, min(1.0, s))
 
 
+def estimate_semantic_quality(items: list[dict], top_n: int = 3) -> float:
+    """
+    Calibrated relevance estimate from scout's per-chunk `semantic_score`
+    (content_embedding cosine, cross-query comparable). Returns the **best** (max)
+    semantic_score among the top-N items — the gate's question is "is there at least one
+    strongly relevant chunk?", which the single best chunk answers better than a mean
+    diluted by weaker chunks. Returns None when no item carries the field, so the caller
+    falls back to the lexical estimate. Items arrive already ranked by retrieval.
+    """
+    scores: list[float] = []
+    for it in items[:top_n]:
+        if not isinstance(it, dict):
+            continue
+        s = it.get("semantic_score")
+        if isinstance(s, (int, float)):
+            scores.append(float(s))
+    if not scores:
+        return None
+    return max(scores)
+
+
 def filter_items_by_min_score(items: list[dict], min_score: float) -> tuple[list[dict], dict[str, int | float]]:
     """
     Keep only retrieved items whose OpenSearch score clears a minimum bar.
