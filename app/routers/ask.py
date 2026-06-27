@@ -270,6 +270,23 @@ def _strip_orphan_citations(text: str, valid_source_numbers: set[int]) -> str:
     return cleaned.strip()
 
 
+def _renumber_citations(text: str, renumber: dict[int, int]) -> str:
+    """
+    Remap inline citation numbers to a new scheme (`renumber` maps old -> new), so the
+    displayed citations can be made a clean sequential 1..k that matches the source list.
+    Rewrites [n] and grouped [a, b, c] citations in a single pass; tokens with no mapping
+    are dropped. Uses the same bracket pattern as _extract_cited_numbers/_strip_orphan_citations.
+    """
+    def _replace(match):
+        tokens = [t for t in _re.split(r"[,\s–-]+", match.group(1)) if t.isdigit()]
+        mapped = [str(renumber[int(t)]) for t in tokens if int(t) in renumber]
+        if not mapped:
+            return ""
+        return "[" + ", ".join(mapped) + "]"
+
+    return _re.sub(r"\[\s*([\d\s,–-]+)\s*\]", _replace, text)
+
+
 def _cache_params(_temp, _max, _model):
     return {
         "temperature": _temp,
@@ -1587,20 +1604,25 @@ async def ask_stream(
         norm_text = _strip_orphan_citations(norm_text, valid_source_numbers)
         cited_nums = _extract_cited_numbers(norm_text)
 
-        # Token streaming is optimistic. Send the citation-sanitized final text so
-        # clients can replace any orphan references the model emitted mid-stream.
-        async for x in emit("final", {"text": full_text}):
-            yield x
-
+        # Build the cited sources, then renumber to a clean sequential 1..k applied to
+        # BOTH the answer text and the source list, so displayed citations have no gaps
+        # and still map 1:1 (text [4] -> source [4]). Token streaming is optimistic; the
+        # `final` event replaces the streamed text with this renumbered, sanitized version.
+        cited_sources: list = []
         if cited_nums:
             by_num = {s["n"]: s for s in all_sources}
             cited_sources = [by_num[n] for n in sorted(cited_nums) if n in by_num]
-            if cited_sources:
-                async for x in emit("sources", cited_sources):
-                    yield x
-        else:
-            async for x in emit("sources", []):
-                yield x
+
+        if cited_sources:
+            renumber = {src["n"]: i + 1 for i, src in enumerate(cited_sources)}
+            full_text = _renumber_citations(full_text, renumber)
+            cited_sources = [dict(src, n=i + 1, sid=f"S{i + 1}") for i, src in enumerate(cited_sources)]
+
+        async for x in emit("final", {"text": full_text}):
+            yield x
+
+        async for x in emit("sources", cited_sources):
+            yield x
 
         # Timing
         total_ms = int((time.perf_counter() - t0) * 1000)

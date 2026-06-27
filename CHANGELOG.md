@@ -159,3 +159,8 @@ This changelog records Farm Assistant changes from the `master` branch histories
 ## 2026-06-23
 
 - `43cd3ad5` [master] - pranavnbapat - fix(markdown): strip orphan bullet/dot lines incl. nbsp/zero-width from model output
+
+## 2026-06-27
+
+- `b06d4d31` [master] - pranavnbapat - feat(relevance): add semantic gate via scout semantic_score, msmarco-calibrated (default overlap)
+- `1369ef56` [master] - pranavnbapat - feat(farm_assistant): add gated web-search fallback for weak KO retrieval (default off)
