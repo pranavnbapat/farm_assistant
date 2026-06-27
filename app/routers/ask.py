@@ -577,6 +577,15 @@ _GENERAL_OFFTOPIC_TERMS = {
     "germany", "united states", "usa", "election",
 }
 
+# Unambiguous math / academic markers that should never be answered by an agricultural
+# assistant. Kept deliberately narrow (terms that won't appear in legitimate farming
+# questions) so this deterministic guard can't accidentally refuse on-topic queries.
+_ACADEMIC_OFFTOPIC_TERMS = {
+    "square root", "cube root", "factorial", "logarithm", "derivative of",
+    "integral of", "quadratic", "pythagoras", "trigonometry", "calculus",
+    "vedic math", "vedic maths",
+}
+
 _CULINARY_INTENT_TERMS = {
     "recipe", "recipes", "cook", "cooking", "bake", "baking",
     "fry", "frying", "boil", "grill", "roast", "kitchen",
@@ -678,6 +687,8 @@ def _hard_route_turn_mode(user_q: str) -> Optional[str]:
         return None
     has_agri_hint = any(term in q for term in _AGRI_HINT_TERMS)
     if any(term in q for term in _PROMPT_INJECTION_TERMS):
+        return "off_topic"
+    if any(term in q for term in _ACADEMIC_OFFTOPIC_TERMS):
         return "off_topic"
     if any(term in q for term in _CONSUMER_TECH_OFFTOPIC_TERMS):
         return "off_topic"
