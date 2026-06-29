@@ -7,14 +7,14 @@ from app.services import web_search_service as wss
 
 def test_registrable_host_strips_www_and_lowercases():
     assert wss._registrable_host("https://WWW.Fao.org/x") == "fao.org"
-    assert wss._registrable_host("https://en.wikipedia.org/wiki/Potato") == "en.wikipedia.org"
+    assert wss._registrable_host("https://gd.eppo.int/taxon/PHYTIN") == "gd.eppo.int"
     assert wss._registrable_host("not a url") == ""
 
 
 def test_host_allowed_matches_domain_and_subdomains():
     allow = ["fao.org", "europa.eu"]
     assert wss._host_allowed("https://www.fao.org/a", allow) is True
-    assert wss._host_allowed("https://en.wikipedia.org/x", allow) is False
+    assert wss._host_allowed("https://gd.eppo.int/x", allow) is False
     assert wss._host_allowed("https://ec.europa.eu/info", allow) is True   # subdomain
     # A look-alike suffix must not match.
     assert wss._host_allowed("https://notfao.org/x", allow) is False
@@ -78,9 +78,8 @@ def test_make_provider_keyed_vs_keyless(monkeypatch):
     assert wss._make_provider("staan") is None
     assert wss._make_provider("tavily") is None
     assert wss._make_provider("brave") is None
-    # ...keyless providers are always available.
+    # ...keyless DuckDuckGo is always available.
     assert isinstance(wss._make_provider("duckduckgo"), wss.DuckDuckGoProvider)
-    assert isinstance(wss._make_provider("wikipedia"), wss.WikipediaProvider)
     # Once keys are present, the keyed providers instantiate.
     monkeypatch.setattr(wss.S, "STAAN_API_KEY", "staan-x")
     monkeypatch.setattr(wss.S, "TAVILY_API_KEY", "tvly-x")
@@ -118,7 +117,7 @@ def _patch_chain(monkeypatch, *, text="x", results=None, served_by="tavily"):
         results = [
             {"title": "FAO late blight", "url": "https://www.fao.org/page-a", "snippet": "blight", "text": text},
             {"title": "FAO duplicate domain", "url": "https://fao.org/page-b", "snippet": "dup", "text": text},
-            {"title": "Wikipedia Potato", "url": "https://en.wikipedia.org/wiki/Potato", "snippet": "potato", "text": text},
+            {"title": "EPPO potato blight", "url": "https://gd.eppo.int/taxon/PHYTIN", "snippet": "potato", "text": text},
         ]
 
     async def _fake_chain(query, *, max_results, allowlist):
@@ -138,7 +137,7 @@ def test_build_contexts_numbering_dedup_and_lockstep(monkeypatch):
         )
     )
 
-    # Two source domains survive the per-domain dedup (fao.org, wikipedia.org).
+    # Two source domains survive the per-domain dedup (fao.org, eppo.int).
     assert len(contexts) == len(sources) == 2
     # SID numbering continues from the offset (2 KO sources already present).
     assert [s.sid for s in sources] == ["S3", "S4"]
@@ -146,7 +145,7 @@ def test_build_contexts_numbering_dedup_and_lockstep(monkeypatch):
     assert contexts[1].startswith("[S4]")
     # Provenance is recorded as the registrable domain.
     assert sources[0].project == "fao.org"
-    assert sources[1].project == "en.wikipedia.org"
+    assert sources[1].project == "gd.eppo.int"
     assert sources[0].url == "https://www.fao.org/page-a"
 
 

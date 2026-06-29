@@ -200,52 +200,6 @@ class StaanProvider(WebSearchProvider):
         )
 
 
-class WikipediaProvider(WebSearchProvider):
-    """Keyless institutional/foundational source via the MediaWiki API. Returns the
-    article intro as clean plain text (no fetch+extract needed). Multilingual, but we
-    query English Wikipedia to match the English-only retrieval pipeline."""
-
-    name = "wikipedia"
-    _ENDPOINT = "https://en.wikipedia.org/w/api.php"
-
-    async def search(self, query: str, *, max_results: int, allowlist: List[str]) -> List[Dict[str, str]]:
-        params = {
-            "action": "query",
-            "format": "json",
-            "generator": "search",
-            "gsrsearch": query,
-            "gsrlimit": max_results,
-            "prop": "extracts|info",
-            "exintro": 1,
-            "explaintext": 1,
-            "inprop": "url",
-            "redirects": 1,
-        }
-        headers = {"User-Agent": _USER_AGENT}
-        timeout = httpx.Timeout(S.WEB_FETCH_TIMEOUT)
-        async with httpx.AsyncClient(timeout=timeout, verify=S.VERIFY_SSL) as client:
-            res = await client.get(self._ENDPOINT, params=params, headers=headers)
-            res.raise_for_status()
-            data = res.json()
-
-        pages = ((data.get("query") or {}).get("pages") or {})
-        # MediaWiki returns an "index" per page reflecting search rank; sort by it.
-        ordered = sorted(pages.values(), key=lambda p: p.get("index", 1_000_000))
-        out: List[Dict[str, str]] = []
-        for p in ordered:
-            page_url = (p.get("fullurl") or "").strip()
-            extract = (p.get("extract") or "").strip()
-            if not page_url or not extract:
-                continue
-            out.append({
-                "title": (p.get("title") or "").strip(),
-                "url": page_url,
-                "snippet": extract[:300],
-                "text": extract,
-            })
-        return out
-
-
 def _make_provider(name: str) -> Optional[WebSearchProvider]:
     """Instantiate a provider by name, or None when it isn't configured (missing key)."""
     name = (name or "").strip().lower()
@@ -257,8 +211,6 @@ def _make_provider(name: str) -> Optional[WebSearchProvider]:
         return BraveProvider() if S.BRAVE_API_KEY else None
     if name == "duckduckgo":
         return DuckDuckGoProvider()
-    if name == "wikipedia":
-        return WikipediaProvider()
     logger.warning("Unknown web search provider '%s' in WEB_SEARCH_PROVIDERS; skipping", name)
     return None
 

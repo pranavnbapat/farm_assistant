@@ -133,7 +133,7 @@ from ClickHouse `/llm_retrieve` logs.
       │
       ▼
  _chain_search  ── try providers in order: WEB_SEARCH_PROVIDERS
-      │           default: tavily → staan → brave → duckduckgo → wikipedia
+      │           default: tavily → staan → brave → duckduckgo
       │
       │   for each provider:
       │     • no API key set?           → skip, go to next
@@ -149,7 +149,7 @@ from ClickHouse `/llm_retrieve` logs.
       │
       ▼
  for each result:
-     • Tavily/Wikipedia already return clean text  → use it directly
+     • Tavily already returns clean text  → use it directly
      • Brave/DuckDuckGo return links only          → fetch the page + extract main
                                                       text with trafilatura
       │
@@ -161,7 +161,7 @@ from ClickHouse `/llm_retrieve` logs.
 ```
 
 **Providers today:** with only a Tavily key set, the live chain is effectively
-**Tavily → DuckDuckGo → Wikipedia** (staan/brave skipped until their keys exist).
+**Tavily → DuckDuckGo** (staan/brave skipped until their keys exist).
 All search/fetch happens in the backend — the model never browses by itself.
 
 ---

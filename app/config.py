@@ -89,9 +89,8 @@ class Settings(BaseSettings):
     # when its required API key is missing, and the chain advances to the next one
     # on any error (quota/rate-limit/network) or when it returns no allowlisted hits.
     # Supported: "tavily" (key), "staan" (key, EU-sovereign, see note in
-    # web_search_service), "brave" (key), "duckduckgo" (free, keyless),
-    # "wikipedia" (free, keyless institutional/foundational source).
-    WEB_SEARCH_PROVIDERS: str = "tavily,staan,brave,duckduckgo,wikipedia"
+    # web_search_service), "brave" (key), "duckduckgo" (free, keyless).
+    WEB_SEARCH_PROVIDERS: str = "tavily,staan,brave,duckduckgo"
     STAAN_API_KEY: str | None = None
     TAVILY_API_KEY: str | None = None
     BRAVE_API_KEY: str | None = None
@@ -104,7 +103,7 @@ class Settings(BaseSettings):
     WEB_FETCH_TIMEOUT: float = 6.0
     WEB_TRUSTED_DOMAINS: str = (
         "fao.org,europa.eu,ec.europa.eu,efsa.europa.eu,eppo.int,oecd.org,"
-        "inrae.fr,wur.nl,teagasc.ie,ahdb.org.uk,extension.org,wikipedia.org"
+        "inrae.fr,wur.nl,teagasc.ie,ahdb.org.uk"
     )
 
     # pydantic v2 config
