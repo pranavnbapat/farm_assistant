@@ -905,6 +905,7 @@ async def ask_stream(
     client_history: Optional[str] = None,
     replace_history: bool = False,
     pause_personalization: bool = False,
+    include_external_sources: bool = True,
     request: Request = None,
 ):
     """
@@ -1259,7 +1260,7 @@ async def ask_stream(
             # searches an allowlist and feeds extracted passages as additional cited
             # grounding; the model never browses. KO sources keep their citation
             # numbers; web sources are appended after them.
-            if S.WEB_FALLBACK_ENABLED:
+            if S.WEB_FALLBACK_ENABLED and include_external_sources:
                 needs_web = (not contexts) or (retrieval_quality < web_threshold)
                 if needs_web:
                     async for x in emit("status", {"stage": "Web", "message": "Searching trusted external sources..."}):
@@ -1674,6 +1675,7 @@ async def chat_message_stream_create(
         client_history=json.dumps(body.client_history) if body.client_history else None,
         replace_history=body.replace_history,
         pause_personalization=body.pause_personalization,
+        include_external_sources=body.include_external_sources,
         request=request,
     )
 
@@ -1698,6 +1700,7 @@ async def chat_message_stream_existing(
         client_history=json.dumps(body.client_history) if body.client_history else None,
         replace_history=body.replace_history,
         pause_personalization=body.pause_personalization,
+        include_external_sources=body.include_external_sources,
         request=request,
     )
 

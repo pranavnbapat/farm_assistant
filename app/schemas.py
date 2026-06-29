@@ -134,6 +134,10 @@ class ChatMessageStreamIn(BaseModel):
     # for this turn and do not write back any new profile facts/notes.
     # ChatGPT calls this "pause memory for this chat".
     pause_personalization: bool = False
+    # Per-turn user preference. The deployment-level WEB_FALLBACK_ENABLED flag
+    # still acts as the upper bound; clients can disable external sources for
+    # a turn, but cannot enable them when the server flag is off.
+    include_external_sources: bool = True
 
 
 class UserProfilePatchIn(BaseModel):
