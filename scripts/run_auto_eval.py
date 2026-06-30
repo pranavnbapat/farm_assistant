@@ -19,7 +19,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topic-ratio", default="3:1")
     parser.add_argument("--base-question-count", type=int, default=None)
     parser.add_argument("--max-concurrency", type=int, default=None)
+    parser.add_argument(
+        "--phase", choices=["generate", "judge", "both"], default="both",
+        help="generate = questions+answers only; judge = score all pending persisted runs; both = full cycle",
+    )
     parser.add_argument("--dry-run", action="store_true")
+    controlled = parser.add_mutually_exclusive_group()
+    controlled.add_argument("--controlled", dest="controlled", action="store_true",
+                            help="Design 2: Qwen+EuroLLM generate from one shared context (model-only comparison)")
+    controlled.add_argument("--independent", dest="controlled", action="store_false",
+                            help="Design 1: each model runs its own full RAG pipeline")
+    parser.set_defaults(controlled=None)
     parser.add_argument("--seed", type=int, default=None)
     return parser.parse_args()
 
@@ -31,6 +41,8 @@ async def main() -> None:
         topic_ratio=args.topic_ratio,
         base_question_count=args.base_question_count,
         max_concurrency=args.max_concurrency,
+        phase=args.phase,
+        controlled=args.controlled,
         dry_run=args.dry_run,
         seed=args.seed,
     )

@@ -49,6 +49,34 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len((text or "").split()))
 
 
+def _estimate_tokens_formula(text: str) -> int:
+    """Approximate token count when a backend doesn't report usage (e.g. Mistral/TNO).
+
+    Mistral Small uses a SentencePiece tokenizer (~4 chars/token for English, fewer for
+    other EU languages). Blend a char-based and a word-based heuristic so the estimate
+    stays reasonable across all 24 languages.
+    """
+    text = (text or "").strip()
+    if not text:
+        return 0
+    by_chars = len(text) / 4.0
+    by_words = len(text.split()) * 1.3
+    return max(1, round((by_chars + by_words) / 2))
+
+
+def _token_usage(message: str, usage: Any) -> dict[str, Any]:
+    """Real backend usage if reported, else a formula estimate (output side)."""
+    if isinstance(usage, dict) and usage.get("completion_tokens") is not None:
+        out = usage.get("completion_tokens")
+        inp = usage.get("prompt_tokens")
+        total = usage.get("total_tokens")
+        if total is None:
+            total = (inp or 0) + (out or 0)
+        return {"input_tokens": inp, "output_tokens": out, "total_tokens": total, "source": "backend"}
+    out = _estimate_tokens_formula(message)
+    return {"input_tokens": None, "output_tokens": out, "total_tokens": out, "source": "estimated_formula"}
+
+
 def _variant_metadata(variant: dict[str, str]) -> dict[str, Any]:
     backend = variant["backend"]
     model_name = {
@@ -187,6 +215,7 @@ async def _farm_assistant_answer(
                 "question_length_tokens_est": _estimate_tokens(question.question),
                 "answer_length_chars": len(message),
                 "answer_length_tokens_est": _estimate_tokens(message),
+                "token_usage": _token_usage(message, meta.get("usage")),
                 "sources_count": len(sources),
                 "stream_completed": True,
             },
@@ -256,6 +285,8 @@ async def _mistral_answer(client: httpx.AsyncClient, question: LocalizedQuestion
                 "question_length_tokens_est": _estimate_tokens(question.question),
                 "answer_length_chars": len(message),
                 "answer_length_tokens_est": _estimate_tokens(message),
+                # TNO returns no usage; estimate output tokens via formula (Mistral Small).
+                "token_usage": _token_usage(message, None),
                 "sources_count": 0,
                 "stream_completed": True,
             },

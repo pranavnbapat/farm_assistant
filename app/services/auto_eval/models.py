@@ -11,6 +11,13 @@ class AutoEvalRunIn(BaseModel):
     topic_ratio: str | None = None
     base_question_count: int | None = Field(default=None, ge=1, le=100)
     max_concurrency: int | None = Field(default=None, ge=1, le=20)
+    # "generate" = make questions + fan out + persist runs (no judging).
+    # "judge"    = pull pending persisted runs and run the LLM judges only.
+    # "both"     = the full inline cycle (default).
+    phase: Literal["generate", "judge", "both"] = "both"
+    # Design 2: shared-context comparison (Qwen+EuroLLM generate from one identical prompt;
+    # Mistral stays full-system). None -> AUTOMATION_CONTROLLED_ENABLED.
+    controlled: bool | None = None
     dry_run: bool = False
     # Run the cycle as a fire-and-forget background task; the endpoint returns a
     # batch_id immediately instead of blocking until every run is persisted.

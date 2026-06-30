@@ -88,8 +88,13 @@ class Settings(BaseSettings):
     AUTOMATION_TOPIC_RATIO: str = "3:1"
     # One base question localized into all 24 EU languages = 24 comparison runs per cycle.
     AUTOMATION_BASE_QUESTION_COUNT: int = 1
-    AUTOMATION_MIN_ANSWERS: int = 2
-    AUTOMATION_MAX_CONCURRENCY: int = 3
+    # Minimum chatbot answers required to keep a question. 3 = require all three models;
+    # a question where any model fails is skipped (nothing stored for it).
+    AUTOMATION_MIN_ANSWERS: int = 3
+    # Questions processed at a time. 1 = strictly sequential: one question goes to all 3
+    # models, answers are stored, then the next question — so no model ever receives two
+    # questions at once. Raise only if the backends tolerate concurrent questions.
+    AUTOMATION_MAX_CONCURRENCY: int = 1
     AUTOMATION_REQUEST_TIMEOUT: float = 180.0
     # Token budget for ONE base question localized into all requested languages.
     AUTOMATION_QUESTION_MAX_TOKENS: int = 3000
@@ -106,8 +111,30 @@ class Settings(BaseSettings):
     JUDGE_OPENAI_MODEL: str = "gpt-5.4-mini"
     JUDGE_ANTHROPIC_API_KEY: str | None = None
     JUDGE_ANTHROPIC_MODEL: str = "claude-haiku-4-5"
-    JUDGE_MAX_TOKENS: int = 1400
+    # OUTPUT cap for the judge's JSON (input = question + 3 full answers is NOT limited by this).
+    # Headroom for reasoning models (whose hidden reasoning counts against this) and for future
+    # added/sub-divided criteria. You only pay for tokens actually generated.
+    JUDGE_MAX_TOKENS: int = 6000
     JUDGE_TEMPERATURE: float = 0.0
+
+    # --- Design 2: controlled (shared-context) comparison ---
+    # When enabled, the orchestrator runs ONE retrieval+prompt build (prepare_only) on a
+    # designated FA "preparer", then generates the Qwen and EuroLLM answers from that
+    # IDENTICAL prompt via each model's raw vLLM /v1 endpoint (model-only comparison).
+    # Mistral stays a full-system external entrant (flagged controlled_context=false).
+    AUTOMATION_CONTROLLED_ENABLED: bool = False
+    # FA instance that runs prepare_only; blank -> FARM_ASSISTANT_UM_QWEN3_URL.
+    CONTROLLED_PREPARER_URL: str = ""
+    # Raw vLLM /v1 endpoints for generation; blanks fall back to the main vLLM config (Qwen).
+    CONTROLLED_QWEN_VLLM_URL: str = ""
+    CONTROLLED_QWEN_MODEL: str = ""
+    CONTROLLED_QWEN_API_KEY: str = ""
+    CONTROLLED_EUROLLM_VLLM_URL: str = "https://bqbozgg4zi5ju6-8000.proxy.runpod.net"
+    CONTROLLED_EUROLLM_MODEL: str = "current"
+    CONTROLLED_EUROLLM_API_KEY: str = ""
+    # Identical generation params applied to BOTH models (temperature/max_tokens come from
+    # the preparer's assembled prompt; top_p is fixed here for parity).
+    CONTROLLED_TOP_P: float = 0.9
 
     # --- Web-search fallback (additive, default OFF) ---
     # When enabled, the `normal` retrieval turn searches a trusted allowlist of

@@ -906,11 +906,18 @@ async def ask_stream(
     replace_history: bool = False,
     pause_personalization: bool = False,
     include_external_sources: bool = True,
+    prepare_only: bool = False,
     request: Request = None,
 ):
     """
     Streaming endpoint using Server-Sent Events (SSE).
     Natural conversation flow - sends full history to LLM, lets it handle context.
+
+    When `prepare_only` is true, the full pre-computation runs (routing, query
+    tightening, /llm_retrieve, gating, context + prompt assembly) and the assembled
+    `messages` + `sources` + `grounding_mode` are emitted as a single `prompt` event,
+    then the request returns WITHOUT generating. This lets an external orchestrator
+    fan one identical prompt out to several models (controlled, model-only comparison).
     """
 
     async def emit(event: str, data):
@@ -1508,6 +1515,21 @@ async def ask_stream(
         # --- LLM stream ---
         async for x in emit("grounding", {"mode": grounding_state}):
             yield x
+
+        # Controlled "prepare only": hand back the fully-assembled prompt + sources so an
+        # external orchestrator can generate the answer with several models from one
+        # identical context. No generation happens here.
+        if prepare_only:
+            async for x in emit("prompt", {
+                "messages": messages,
+                "grounding_mode": grounding_state,
+                "sources": all_sources,
+                "answer_language": answer_language,
+                "max_tokens": _max_tokens,
+                "temperature": _temperature,
+            }):
+                yield x
+            return
 
         t_llm_start = time.perf_counter()
         ctx = initial_llm_ctx

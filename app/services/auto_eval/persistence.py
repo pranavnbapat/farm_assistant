@@ -89,7 +89,7 @@ async def persist_comparison_run(
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(getattr(S, "AUTOMATION_REQUEST_TIMEOUT", 180.0)), verify=S.VERIFY_SSL, trust_env=False) as client:
         response = await client.post(
-            f"{_backend_url()}/chat/experiments/comparisons/run/",
+            f"{_backend_url()}/chat/experiments/automated/runs/",
             headers={**_auth_headers(tokens), "Content-Type": "application/json"},
             json=payload,
         )
@@ -101,10 +101,28 @@ async def persist_comparison_run(
     return str(run_id)
 
 
+async def fetch_runs(tokens: ServiceTokens, experiment_id: str, limit: int = 500) -> list[dict[str, Any]]:
+    """Read back persisted comparison runs (newest first) for the judge phase.
+
+    Each result includes `answers` (label + assistant_message + backend) and
+    `llm_evaluation_providers` (providers already judged), so callers can skip
+    runs that are fully evaluated.
+    """
+    async with httpx.AsyncClient(timeout=httpx.Timeout(getattr(S, "AUTOMATION_REQUEST_TIMEOUT", 180.0)), verify=S.VERIFY_SSL, trust_env=False) as client:
+        response = await client.get(
+            f"{_backend_url()}/chat/experiments/automated/",
+            headers=_auth_headers(tokens),
+            params={"experiment_id": experiment_id, "limit": max(1, min(int(limit), 500))},
+        )
+        response.raise_for_status()
+        data = response.json()
+    return data.get("results") or []
+
+
 async def persist_judge_result(tokens: ServiceTokens, comparison_run_id: str, batch_id: str, result: JudgeResult) -> None:
     async with httpx.AsyncClient(timeout=httpx.Timeout(getattr(S, "AUTOMATION_REQUEST_TIMEOUT", 180.0)), verify=S.VERIFY_SSL, trust_env=False) as client:
         response = await client.post(
-            f"{_backend_url()}/chat/experiments/comparisons/llm-evaluation/",
+            f"{_backend_url()}/chat/experiments/automated/evaluation/",
             headers={**_auth_headers(tokens), "Content-Type": "application/json"},
             json=result.to_persistence_payload(comparison_run_id, batch_id),
         )
