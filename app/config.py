@@ -79,6 +79,36 @@ class Settings(BaseSettings):
     # Auto-detected for models named "gpt-5*"; set true to force it otherwise.
     OPENAI_GPT5_PARAM_STYLE: bool = False
 
+    # --- Automated Arena evaluation ---
+    AUTOMATION_ENABLED: bool = False
+    AUTOMATION_TOKEN: str | None = None
+    AUTOMATION_SERVICE_EMAIL: str = ""
+    AUTOMATION_SERVICE_PASSWORD: str = ""
+    AUTOMATION_EXPERIMENT_ID: str = "automated_eval"
+    AUTOMATION_TOPIC_RATIO: str = "3:1"
+    # One base question localized into all 24 EU languages = 24 comparison runs per cycle.
+    AUTOMATION_BASE_QUESTION_COUNT: int = 1
+    AUTOMATION_MIN_ANSWERS: int = 2
+    AUTOMATION_MAX_CONCURRENCY: int = 3
+    AUTOMATION_REQUEST_TIMEOUT: float = 180.0
+    # Token budget for ONE base question localized into all requested languages.
+    AUTOMATION_QUESTION_MAX_TOKENS: int = 3000
+    FARM_ASSISTANT_UM_QWEN3_URL: str = "https://farm-assistant.nexavion.com"
+    FARM_ASSISTANT_UM_QWEN3_MODEL_NAME: str = "qwen3-30b-a3b-awq"
+    FARM_ASSISTANT_EUROLLM_URL: str = "http://127.0.0.1:18005"
+    FARM_ASSISTANT_EUROLLM_MODEL_NAME: str = "utter-project/EuroLLM-9B-Instruct"
+    EUF_CHATBOT_API_URL: str = "https://farm-assistant.tnods.nl"
+    EUF_CHATBOT_API_KEY: str = ""
+    EUF_CHATBOT_ARENA_UUID: str = "45b75f62-3fa3-4b18-8593-1411f110a98e"
+    EUF_CHATBOT_MODEL_NAME: str = "azure_ai/mistral-small-2503"
+    JUDGE_OPENAI_API_KEY: str | None = None
+    JUDGE_OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    JUDGE_OPENAI_MODEL: str = "gpt-5.4-mini"
+    JUDGE_ANTHROPIC_API_KEY: str | None = None
+    JUDGE_ANTHROPIC_MODEL: str = "claude-haiku-4-5"
+    JUDGE_MAX_TOKENS: int = 1400
+    JUDGE_TEMPERATURE: float = 0.0
+
     # --- Web-search fallback (additive, default OFF) ---
     # When enabled, the `normal` retrieval turn searches a trusted allowlist of
     # agriculture/forestry web sources whenever internal OpenSearch retrieval is

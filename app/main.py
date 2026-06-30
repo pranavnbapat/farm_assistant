@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.routers.ask import router as ask_router
+from app.routers.auto_eval import router as auto_eval_router
 from app.routers.files import router as files_router
 from app.schemas import (
     ChatSessionCreateIn,
@@ -194,6 +195,7 @@ async def health():
 # Mount feature routers
 app.include_router(ask_router)
 app.include_router(files_router)
+app.include_router(auto_eval_router)
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def login_page():
@@ -588,6 +590,20 @@ async def api_store_comparison_result(request: Request):
     if not S.CHAT_BACKEND_URL:
         raise HTTPException(status_code=503, detail="Chat backend not configured")
     url = f"{S.CHAT_BACKEND_URL}/chat/experiments/comparisons/result/"
+    return await _proxy_json_request(
+        "POST",
+        url,
+        headers=_chat_backend_headers(request),
+        json_body=await request.json(),
+    )
+
+
+
+@app.post("/chatbot/api/experiments/comparisons/llm-evaluation", tags=["Chats"], summary="Persist an automated LLM evaluation for a comparison run")
+async def api_store_comparison_llm_evaluation(request: Request):
+    if not S.CHAT_BACKEND_URL:
+        raise HTTPException(status_code=503, detail="Chat backend not configured")
+    url = f"{S.CHAT_BACKEND_URL}/chat/experiments/comparisons/llm-evaluation/"
     return await _proxy_json_request(
         "POST",
         url,
