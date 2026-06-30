@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     AUTOMATION_MAX_CONCURRENCY: int = 1
     AUTOMATION_REQUEST_TIMEOUT: float = 180.0
     # Token budget for ONE base question localized into all requested languages.
-    AUTOMATION_QUESTION_MAX_TOKENS: int = 3000
+    AUTOMATION_QUESTION_MAX_TOKENS: int = 12000
     FARM_ASSISTANT_UM_QWEN3_URL: str = "https://farm-assistant.nexavion.com"
     FARM_ASSISTANT_UM_QWEN3_MODEL_NAME: str = "qwen3-30b-a3b-awq"
     FARM_ASSISTANT_EUROLLM_URL: str = "http://127.0.0.1:18005"

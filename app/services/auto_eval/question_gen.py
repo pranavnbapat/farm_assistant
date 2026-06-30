@@ -6,6 +6,8 @@ import logging
 import re
 from typing import Any
 
+import httpx
+
 from app.clients.vllm_client import generate_once
 from app.config import get_settings
 
@@ -16,122 +18,151 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json(raw: str) -> Any:
+    # Tolerant extraction: strict=False allows control chars; brace-scan survives any
+    # preamble/thinking the model prints around a small one-field JSON object.
     text = (raw or "").strip()
     if not text:
-        raise ValueError("Question generator returned empty output")
+        raise ValueError("Generator returned empty output")
     try:
-        return json.loads(text)
+        return json.loads(text, strict=False)
     except json.JSONDecodeError:
         match = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
         if match:
-            return json.loads(match.group(1).strip())
+            return json.loads(match.group(1).strip(), strict=False)
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
-            return json.loads(text[start:end + 1])
+            return json.loads(text[start:end + 1], strict=False)
         raise
 
 
-def _question_prompt(planned: PlannedBaseQuestion, languages: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Prompt for ONE base question localized into every requested language."""
+def _question_field(raw: str) -> str:
+    """Pull the `question` string out of a tiny {"question": "..."} object."""
+    payload = _extract_json(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("expected a JSON object")
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        raise ValueError("empty question field")
+    return question
+
+
+async def _call_json(messages: list[dict[str, str]], *, max_tokens: int) -> str:
+    """One generation call with 429 backoff + re-generate on malformed/empty JSON.
+
+    Each call asks for a single short string, so the JSON is tiny and rarely malformed —
+    a stark contrast to asking one call for all 24 languages at once.
+    """
+    retries = getattr(S, "AUTOMATION_QUESTION_RETRIES", 4)
+    delay = getattr(S, "AUTOMATION_QUESTION_RETRY_BASE_DELAY", 3.0)
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return await generate_once("", temperature=0.7, max_tokens=max_tokens, messages=messages)
+        except httpx.HTTPStatusError as error:
+            last_error = error
+            code = error.response.status_code if error.response is not None else None
+            if code == 429 and attempt < retries:
+                logger.warning("question-gen 429; retry %d/%d after %.1fs", attempt + 1, retries, delay)
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise RuntimeError("generation produced no output")
+
+
+def _source_prompt(planned: PlannedBaseQuestion) -> list[dict[str, str]]:
+    if planned.topic_category == "agriculture":
+        scope = (
+            "a realistic EU agriculture, forestry, advisory, policy, crop, livestock, soil, "
+            "climate, machinery, or farm-management question"
+        )
+    else:
+        scope = (
+            "a question clearly OUTSIDE agriculture (so a scoped farm assistant should "
+            "recognise the mismatch or answer cautiously)"
+        )
     system = (
         "You generate neutral benchmark questions for an agricultural chatbot arena. "
-        "Return strict JSON only. Do not include markdown. "
-        "Agriculture questions must be realistic EU agriculture, forestry, advisory, policy, crop, livestock, soil, climate, machinery, or farm-management questions. "
-        "Non-agriculture questions must be clearly outside agriculture so a scoped farm assistant should identify the mismatch or answer cautiously. "
-        "Write one English source question, then a faithful localized version for every requested EU language. "
-        "Do not add answers."
+        "Return strict JSON only — no markdown, no extra text."
     )
     user = (
-        "Create one localized benchmark question.\n"
-        f"base_question_id: {planned.base_question_id}\n"
-        f"topic_category: {planned.topic_category}\n"
-        f"Languages JSON: {json.dumps(languages, ensure_ascii=False)}\n\n"
-        "Return exactly this JSON shape: {\n"
-        f"  \"base_question_id\": \"{planned.base_question_id}\",\n"
-        f"  \"topic_category\": \"{planned.topic_category}\",\n"
-        "  \"source_language\": \"en\",\n"
-        "  \"source_question\": \"...\",\n"
-        "  \"localizations\": [{\"language\": \"en\", \"language_name\": \"English\", \"question\": \"...\"}]\n"
-        "}"
+        f"Write ONE {scope}, in English. One sentence, no answer.\n"
+        "Return exactly this JSON: {\"question\": \"...\"}"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _parse_one(payload: Any, planned: PlannedBaseQuestion, languages: list[dict[str, str]]) -> list[LocalizedQuestion]:
-    """Parse one base-question payload, tolerating partially-missing localizations."""
-    expected_codes = {language["code"] for language in languages}
-    if not isinstance(payload, dict):
-        raise ValueError("base question output must be a JSON object")
-
-    topic = str(payload.get("topic_category") or planned.topic_category).strip()
-    if topic not in {"agriculture", "non_agriculture"}:
-        topic = planned.topic_category
-    source_question = str(payload.get("source_question") or "").strip()
-    source_language = str(payload.get("source_language") or "en").strip() or "en"
-    localizations = payload.get("localizations")
-    if not isinstance(localizations, list):
-        raise ValueError("base question output is missing a localizations list")
-
-    localized: list[LocalizedQuestion] = []
-    seen: set[str] = set()
-    for loc in localizations:
-        if not isinstance(loc, dict):
-            continue
-        code = str(loc.get("language") or "").strip().lower()
-        if code not in expected_codes or code in seen:
-            continue
-        question = str(loc.get("question") or "").strip()
-        if not question:
-            continue
-        seen.add(code)
-        localized.append(LocalizedQuestion(
-            base_question_id=planned.base_question_id,
-            topic_category=topic,
-            source_language=source_language,
-            source_question=source_question or question,
-            language=code,
-            language_name=str(loc.get("language_name") or code).strip(),
-            question=question,
-        ))
-
-    missing = expected_codes - seen
-    if missing:
-        # Tolerate partial coverage: a few missing/garbled localizations (Maltese, Irish…)
-        # should not discard the whole base question or abort the cycle.
-        logger.warning(
-            "Question %s missing %d/%d localizations: %s",
-            planned.base_question_id, len(missing), len(expected_codes), ", ".join(sorted(missing)),
-        )
-    return localized
-
-
-async def _generate_one(planned: PlannedBaseQuestion, languages: list[dict[str, str]]) -> list[LocalizedQuestion]:
-    raw = await generate_once(
-        "",
-        temperature=0.7,
-        max_tokens=getattr(S, "AUTOMATION_QUESTION_MAX_TOKENS", 3000),
-        messages=_question_prompt(planned, languages),
+def _translate_prompt(question_en: str, language_name: str) -> list[dict[str, str]]:
+    system = (
+        f"You are a professional translator. Translate the user's question into {language_name}, "
+        "preserving meaning and any technical/agricultural terms. "
+        "Return strict JSON only — no markdown, no notes."
     )
-    return _parse_one(_extract_json(raw), planned, languages)
+    user = f"Question (English): {question_en}\nReturn exactly this JSON: {{\"question\": \"<translation in {language_name}>\"}}"
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+async def _generate_source(planned: PlannedBaseQuestion) -> str:
+    last_error: Exception | None = None
+    for attempt in range((getattr(S, "AUTOMATION_QUESTION_RETRIES", 4)) + 1):
+        try:
+            raw = await _call_json(_source_prompt(planned), max_tokens=400)
+            return _question_field(raw)
+        except (json.JSONDecodeError, ValueError) as error:
+            last_error = error
+            await asyncio.sleep(0.5)
+    raise last_error or RuntimeError("source generation failed")
+
+
+async def _translate(question_en: str, language_name: str) -> str:
+    last_error: Exception | None = None
+    for attempt in range((getattr(S, "AUTOMATION_QUESTION_RETRIES", 4)) + 1):
+        try:
+            raw = await _call_json(_translate_prompt(question_en, language_name), max_tokens=600)
+            return _question_field(raw)
+        except (json.JSONDecodeError, ValueError) as error:
+            last_error = error
+            await asyncio.sleep(0.5)
+    raise last_error or RuntimeError("translation failed")
 
 
 async def generate_localized_questions(
     plan: list[PlannedBaseQuestion],
     languages: list[dict[str, str]],
 ) -> list[LocalizedQuestion]:
-    # One Qwen3 call per base question (bounded token budget, parallelized). A failed or
-    # partial base question is skipped rather than aborting the whole cycle.
-    results = await asyncio.gather(
-        *(_generate_one(planned, languages) for planned in plan),
-        return_exceptions=True,
-    )
+    """For each base question: generate the English question once, then translate it into
+    each language with its own tiny call — strictly serial (no concurrent bursts at the
+    rate-limited vLLM). Per-language failures are skipped, not fatal.
+    """
     localized: list[LocalizedQuestion] = []
-    for planned, result in zip(plan, results):
-        if isinstance(result, BaseException):
-            logger.warning("Question generation failed for %s: %s", planned.base_question_id, result)
+    for planned in plan:
+        try:
+            source_en = await _generate_source(planned)
+        except Exception as error:
+            logger.warning("Source question generation failed for %s: %s", planned.base_question_id, error)
             continue
-        localized.extend(result)
+        for language in languages:
+            code = language["code"]
+            name = language["name"]
+            try:
+                question = source_en if code == "en" else await _translate(source_en, name)
+                if not question.strip():
+                    raise ValueError("empty translation")
+            except Exception as error:
+                logger.warning("Translate %s -> %s failed: %s", planned.base_question_id, code, str(error)[:120])
+                continue
+            localized.append(LocalizedQuestion(
+                base_question_id=planned.base_question_id,
+                topic_category=planned.topic_category,
+                source_language="en",
+                source_question=source_en,
+                language=code,
+                language_name=name,
+                question=question.strip(),
+            ))
     if not localized:
         raise RuntimeError("Question generation produced no usable localized questions")
     return localized
