@@ -31,6 +31,48 @@ DEFAULT_VARIANTS = [
     {"id": "mistral", "backend": "euf_chatbot_tnods", "label": "Mistral"},
     {"id": "eurollm", "backend": "eurollm", "label": "EuroLLM"},
 ]
+
+# Sub-topic pools that steer each base question to a DIFFERENT subject — without these the
+# model defaults to the same go-to question every time. One hint is assigned per base question
+# (sampled without immediate repeats), and injected into the generation prompt.
+AGRICULTURE_SUBTOPICS = [
+    "soil health and nutrient management", "crop rotation and cover crops",
+    "integrated pest and disease management", "irrigation and water-use efficiency",
+    "organic farming certification", "CAP subsidies and direct payments",
+    "precision farming and sensors", "climate adaptation and drought resilience",
+    "agroforestry and hedgerows", "livestock welfare and housing",
+    "dairy herd management", "pasture and grazing systems",
+    "fertiliser regulation and nitrate directives", "pollinators and biodiversity",
+    "viticulture and wine production", "horticulture and greenhouses",
+    "farm machinery and automation", "renewable energy on farms (solar, biogas)",
+    "soil erosion and conservation tillage", "carbon sequestration and carbon farming",
+    "food safety and traceability", "post-harvest storage and losses",
+    "agri-environment schemes and rewilding", "young farmers and farm succession",
+    "plant breeding and seed varieties", "aquaculture and inland fisheries",
+    "forestry management and timber", "manure and slurry management",
+    "weed control and herbicide reduction", "farm economics and risk management",
+    "short supply chains and farmers' markets", "rural broadband and digital advisory",
+]
+NON_AGRICULTURE_TOPICS = [
+    "world capital cities", "ancient Roman history", "rules of football",
+    "famous movies and directors", "baking and dessert recipes",
+    "Python programming basics", "the solar system and planets",
+    "classical music composers", "symptoms of the common cold",
+    "personal budgeting and saving", "tourist attractions in Asia",
+    "Shakespeare's plays", "basic algebra and equations",
+    "how smartphones work", "Olympic Games history",
+    "popular video games", "famous painters and art movements",
+    "world religions and festivals", "car engine maintenance", "chess strategy",
+]
+
+# A second dimension combined with the sub-topic to widen the question space (~8x) so a
+# large batch (e.g. 1000) does not collapse to a few phrasings per sub-topic.
+QUESTION_ANGLES = [
+    "a practical how-to", "a specific EU regulation or directive", "a trade-off or comparison",
+    "a troubleshooting scenario", "a recent policy or market change", "a cost or economic angle",
+    "a sustainability or environmental angle", "a beginner-level definition",
+    "a best-practice recommendation", "a data or measurement question",
+]
 # Single source of truth for the judging rubric. To change wording, tighten a
 # boundary, or split a criterion into sub-criteria, edit the `definition` here —
 # the judge prompt, the JSON schema hint, and the response parser are all built

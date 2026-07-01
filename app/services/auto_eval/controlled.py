@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -29,6 +30,7 @@ from .fanout import (
 from .models import LocalizedQuestion, VariantAnswer
 
 S = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _preparer_url() -> str:
@@ -94,6 +96,7 @@ async def answer_question_controlled(
     temperature: float = getattr(S, "TEMPERATURE", 0.4)
     max_tokens: int | None = None
     prepare_error: str | None = None
+    t_prep = time.monotonic()
     try:
         prepared = await prepare_shared_context(question, access_token, refresh_token, batch_id)
         messages = prepared.get("messages") or []
@@ -101,8 +104,10 @@ async def answer_question_controlled(
         grounding = prepared.get("grounding_mode")
         temperature = prepared.get("temperature", temperature)
         max_tokens = prepared.get("max_tokens")
+        logger.info("    prepare: %d sources, grounding=%s in %.1fs", len(sources), grounding, time.monotonic() - t_prep)
     except Exception as error:
         prepare_error = str(error)[:1000]
+        logger.warning("    prepare FAILED in %.1fs: %s", time.monotonic() - t_prep, prepare_error)
 
     top_p = getattr(S, "CONTROLLED_TOP_P", 0.9)
     qwen = (
@@ -133,6 +138,8 @@ async def answer_question_controlled(
                 text, usage = await _generate_raw_vllm(client, base_url, model, api_key, messages, temperature, max_tokens, top_p)
                 if not text:
                     raise RuntimeError("model returned an empty response")
+                logger.info("    %s (%s) generated %d chars / %s out-tok in %.1fs", backend, model, len(text),
+                            usage.get("completion_tokens"), time.monotonic() - started)
                 return VariantAnswer(
                     variant_id=variant_id, backend=backend, assistant_message=text,
                     latency_ms=int((time.monotonic() - started) * 1000),

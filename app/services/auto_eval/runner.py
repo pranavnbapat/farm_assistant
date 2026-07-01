@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from uuid import uuid4
 
 from app.config import get_settings
@@ -14,6 +16,7 @@ from .planning import build_base_question_plan, resolve_languages
 from .question_gen import generate_localized_questions
 
 S = get_settings()
+logger = logging.getLogger(__name__)
 
 ALL_JUDGE_PROVIDERS = {"openai", "anthropic"}
 
@@ -55,28 +58,41 @@ async def _run_generate(inp: AutoEvalRunIn, tokens, batch_id: str, summary: dict
     base_count = inp.base_question_count or getattr(S, "AUTOMATION_BASE_QUESTION_COUNT", 1)
     topic_ratio = inp.topic_ratio or getattr(S, "AUTOMATION_TOPIC_RATIO", "3:1")
     languages = resolve_languages(inp.languages)
+    controlled = inp.controlled if inp.controlled is not None else getattr(S, "AUTOMATION_CONTROLLED_ENABLED", False)
     plan = build_base_question_plan(base_count, topic_ratio, seed=inp.seed)
+    logger.info("PHASE generate | batch=%s controlled=%s base=%d langs=%d (target %d runs)",
+                batch_id, controlled, base_count, len(languages), base_count * len(languages))
+    t_gen = time.perf_counter()
     localized_questions = await generate_localized_questions(plan, languages)
+    logger.info("PHASE generate | %d questions ready in %.1fs; now answering...",
+                len(localized_questions), time.perf_counter() - t_gen)
     semaphore = asyncio.Semaphore(inp.max_concurrency or getattr(S, "AUTOMATION_MAX_CONCURRENCY", 3))
     min_answers = getattr(S, "AUTOMATION_MIN_ANSWERS", 2)
-    controlled = inp.controlled if inp.controlled is not None else getattr(S, "AUTOMATION_CONTROLLED_ENABLED", False)
+    total_q = len(localized_questions)
     summary["base_question_count"] = base_count
-    summary["localized_question_count"] = len(localized_questions)
+    summary["localized_question_count"] = total_q
     summary["grounding_mismatch_count"] = 0
     summary["retrieval_mode"] = "controlled_shared_context" if controlled else "independent_full_system"
 
     async def process_question(index: int, question: LocalizedQuestion):
         async with semaphore:
+            tag = f"[ans {index + 1}/{total_q}] {question.base_question_id}/{question.language}"
+            t_ans = time.perf_counter()
+            logger.info("%s answering (%s)...", tag, "controlled" if controlled else "independent")
             if controlled:
                 raw_answers = await answer_question_controlled(question, tokens.access_token, tokens.refresh_token, batch_id)
             else:
                 raw_answers = await answer_question(question, tokens.access_token, tokens.refresh_token, batch_id)
             usable_answers = [answer for answer in raw_answers if answer.usable]
+            logger.info("%s %d/%d usable answers in %.1fs (%s)", tag, len(usable_answers), len(raw_answers),
+                        time.perf_counter() - t_ans,
+                        ", ".join(f"{a.backend}:{'ok' if a.usable else 'fail'}" for a in raw_answers))
             for answer in raw_answers:
                 if answer.error:
                     summary["model_failures"].setdefault(answer.backend, 0)
                     summary["model_failures"][answer.backend] += 1
             if len(usable_answers) < min_answers:
+                logger.warning("%s SKIPPED: only %d/%d usable (< min_answers=%d)", tag, len(usable_answers), len(raw_answers), min_answers)
                 summary["skipped_questions"].append({
                     "base_question_id": question.base_question_id,
                     "language": question.language,
@@ -129,9 +145,13 @@ async def _run_generate(inp: AutoEvalRunIn, tokens, batch_id: str, summary: dict
                     "grounding_mismatch": grounding_mismatch,
                 })
                 return
+            t_persist = time.perf_counter()
             comparison_run_id = await persist_comparison_run(tokens, batch_id, question, labelled_answers)
             for result in judge_results:
                 await persist_judge_result(tokens, comparison_run_id, batch_id, result)
+            logger.info("%s persisted run %s (%d answers, %d judges) in %.1fs%s", tag, comparison_run_id,
+                        len(labelled_answers), len(judge_results), time.perf_counter() - t_persist,
+                        " [grounding mismatch]" if grounding_mismatch else "")
             summary["persisted_runs"].append({
                 "comparison_run_id": comparison_run_id,
                 "base_question_id": question.base_question_id,
@@ -201,9 +221,12 @@ async def run_automation_cycle(inp: AutoEvalRunIn, batch_id: str | None = None) 
 
     phase = (inp.phase or "both").lower()
     batch_id = batch_id or f"auto_{uuid4().hex[:16]}"
+    t_cycle = time.perf_counter()
+    logger.info("=== auto-eval cycle start | batch=%s phase=%s dry_run=%s ===", batch_id, phase, inp.dry_run)
     # Always log in: even a dry run authenticates so fan-out / judging hit the real backends;
     # only the final persistence writes are skipped.
     tokens = await service_login()
+    logger.info("service login OK")
     summary = {
         "phase": phase,
         "batch_id": batch_id,
@@ -221,4 +244,7 @@ async def run_automation_cycle(inp: AutoEvalRunIn, batch_id: str | None = None) 
     else:
         raise ValueError(f"Unknown phase: {phase}")
 
+    logger.info("=== auto-eval cycle done | batch=%s | persisted=%s skipped=%s in %.1fs ===",
+                batch_id, len(summary.get("persisted_runs", [])), len(summary.get("skipped_questions", [])),
+                time.perf_counter() - t_cycle)
     return summary

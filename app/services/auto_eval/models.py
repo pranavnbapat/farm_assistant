@@ -28,6 +28,8 @@ class AutoEvalRunIn(BaseModel):
 class PlannedBaseQuestion(BaseModel):
     base_question_id: str
     topic_category: Literal["agriculture", "non_agriculture"]
+    # A specific sub-topic to steer the question (e.g. "soil erosion") so questions are unique.
+    topic_hint: str = ""
 
 
 class LocalizedQuestion(BaseModel):

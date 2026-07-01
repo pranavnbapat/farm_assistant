@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 from pathlib import Path
 import sys
 
@@ -23,6 +24,7 @@ def parse_args() -> argparse.Namespace:
         "--phase", choices=["generate", "judge", "both"], default="both",
         help="generate = questions+answers only; judge = score all pending persisted runs; both = full cycle",
     )
+    parser.add_argument("--log-level", default="INFO", help="DEBUG | INFO | WARNING (default INFO = step-by-step progress)")
     parser.add_argument("--dry-run", action="store_true")
     controlled = parser.add_mutually_exclusive_group()
     controlled.add_argument("--controlled", dest="controlled", action="store_true",
@@ -36,6 +38,11 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     body = AutoEvalRunIn(
         languages=[code.strip() for code in args.languages.split(",") if code.strip()] or None,
         topic_ratio=args.topic_ratio,
